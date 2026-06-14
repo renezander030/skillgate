@@ -48,6 +48,16 @@ No Vagrant? `provision.sh` is a plain Alpine script — create a VirtualBox VM w
 NAT port-forward (host 2222 → guest 22), copy `pre-receive`, `post-receive`,
 `done.yaml` into `/tmp`, and run it as root.
 
+### Other hypervisors
+
+The same gate runs anywhere. [`providers/`](providers/) has ready recipes for
+**KVM**, **Hyper-V**, **VMware Workstation/Fusion Pro**, **ESXi / vSphere (VVF /
+Essentials Plus / VCF)**, **XCP-ng**, **bhyve**, and **WSL2** (convenience — soft).
+The Vagrant providers (`--provider=libvirt|vmware_desktop|hyperv`) are the most
+turnkey; the rest are native scripts that reuse the same provisioner. They're also
+parameterizable so a downstream project can stand up its own gate on the same VMs
+(`GATE_PROVISION` / `GATE_PUBKEY`).
+
 ## Optional: mirror gate-passed pushes to GitHub
 
 1. `cat ~gate/.ssh/id_ed25519.pub` on the box (also printed at provision time).

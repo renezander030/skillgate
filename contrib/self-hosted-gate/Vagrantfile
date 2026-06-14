@@ -15,11 +15,22 @@ Vagrant.configure("2") do |config|
   config.vm.hostname = "skillgate-gate"
   config.vm.network "forwarded_port", guest: 22, host: 2222, id: "ssh", auto_correct: true
 
+  # Pick a hypervisor with `vagrant up --provider=<name>` (all reuse this box +
+  # provisioner): virtualbox (default), libvirt (Linux KVM; vagrant-libvirt plugin),
+  # vmware_desktop (Workstation/Fusion Pro; vagrant-vmware-desktop + VMware Utility),
+  # hyperv (Windows Pro; run elevated). For ESXi/vSphere/VVF/Essentials Plus/VCF,
+  # XCP-ng, bhyve, and WSL2, use the native recipes in providers/.
   config.vm.provider "virtualbox" do |vb|
     vb.name   = "skillgate-gate"
     vb.memory = 512
     vb.cpus   = 1
   end
+  config.vm.provider "libvirt"        do |lv| lv.memory = 512; lv.cpus = 1 end
+  config.vm.provider "vmware_desktop" do |v|  v.memory  = 512; v.cpus  = 1 end
+  config.vm.provider "hyperv"         do |h|  h.memory  = 512; h.cpus  = 1 end
+  # NOTE: the forwarded_port gives ssh://gate@127.0.0.1:2222 on
+  # virtualbox/libvirt/vmware. Hyper-V has no NAT forward — push to the VM's own IP
+  # (see `vagrant ssh-config`).
 
   config.vm.provision "file", source: "pre-receive",  destination: "/tmp/pre-receive"
   config.vm.provision "file", source: "post-receive", destination: "/tmp/post-receive"
