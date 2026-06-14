@@ -1,0 +1,20 @@
+#!/bin/sh
+# post-receive — runs only after pre-receive ACCEPTED the push. Mirrors the
+# accepted refs to the real upstream (e.g. GitHub) using a deploy key that exists
+# ONLY on this box. That keeps the upstream free of ungated code without any paid
+# branch-protection tier: this box is the sole writer to upstream.
+#
+# Disabled until you set UPSTREAM below and register this box's deploy key
+# (~gate/.ssh/id_ed25519.pub) as a WRITE deploy key on the upstream repo.
+set -eu
+
+UPSTREAM="${SKILLGATE_UPSTREAM:-}"     # e.g. git@github.com:you/your-repo.git
+[ -z "$UPSTREAM" ] && exit 0
+ZERO=0000000000000000000000000000000000000000
+
+export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+while read -r oldrev newrev refname; do
+  [ "$newrev" = "$ZERO" ] && continue
+  git push "$UPSTREAM" "$newrev:$refname" >&2 \
+    || echo ">> WARN: upstream mirror failed for $refname (gate still passed)" >&2
+done

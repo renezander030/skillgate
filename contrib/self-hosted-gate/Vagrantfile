@@ -1,0 +1,34 @@
+# Vagrantfile — a tiny free Alpine VM that is a skillgate hard gate.
+# Provider: VirtualBox (free; no Docker, no WSL2 needed). The README's hard layer
+# (CI + branch protection) isn't enforced on private repos under a Free personal
+# GitHub account; this box gives the same guarantee for free.
+#
+# Usage (from this directory):
+#   1. put your definition of done at ./done.yaml  (or let provision init one)
+#   2. put your push public key at ./authorized_key.pub
+#   3. vagrant up
+#   4. git remote add gate ssh://gate@127.0.0.1:2222/srv/repos/repo.git
+#      git push gate <branch>      # rejected unless `skillgate check` passes
+
+Vagrant.configure("2") do |config|
+  config.vm.box      = "generic/alpine319"
+  config.vm.hostname = "skillgate-gate"
+  config.vm.network "forwarded_port", guest: 22, host: 2222, id: "ssh", auto_correct: true
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name   = "skillgate-gate"
+    vb.memory = 512
+    vb.cpus   = 1
+  end
+
+  config.vm.provision "file", source: "pre-receive",  destination: "/tmp/pre-receive"
+  config.vm.provision "file", source: "post-receive", destination: "/tmp/post-receive"
+  if File.exist?(File.join(__dir__, "done.yaml"))
+    config.vm.provision "file", source: "done.yaml", destination: "/tmp/done.yaml"
+  end
+  if File.exist?(File.join(__dir__, "authorized_key.pub"))
+    config.vm.provision "file", source: "authorized_key.pub", destination: "/tmp/authorized_key.pub"
+  end
+
+  config.vm.provision "shell", path: "provision.sh"
+end
