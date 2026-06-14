@@ -1,0 +1,2 @@
+# Shell scripts run on macOS/Linux/BSD — force LF so a CRLF checkout can't break them.
+*.sh text eol=lf
