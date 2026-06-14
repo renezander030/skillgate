@@ -27,6 +27,10 @@ chmod +x /srv/repos/repo.git/hooks/pre-receive /srv/repos/repo.git/hooks/post-re
 
 # Push-only user (git-shell = no interactive login).
 adduser -D -s /usr/bin/git-shell gate 2>/dev/null || true
+# adduser -D leaves the account password-LOCKED ('!'); sshd refuses even valid
+# pubkey auth for a locked account ("account is locked"). Unlock to '*' (no usable
+# password, but not locked) so key-based git push works.
+sed -i '/^gate:/ s/:!:/:*:/' /etc/shadow 2>/dev/null || true
 mkdir -p /home/gate/.ssh && chmod 700 /home/gate/.ssh
 [ -f /tmp/authorized_key.pub ] && { cp /tmp/authorized_key.pub /home/gate/.ssh/authorized_keys; chmod 600 /home/gate/.ssh/authorized_keys; }
 
