@@ -1,0 +1,11 @@
+# Add this hook to your .pre-commit-config.yaml (https://pre-commit.com).
+# Runs the deterministic gates before every commit; exit 1 blocks the commit.
+repos:
+  - repo: local
+    hooks:
+      - id: skillgate
+        name: skillgate definition-of-done
+        entry: npx skillgate check
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]

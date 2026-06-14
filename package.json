@@ -1,0 +1,59 @@
+{
+  "name": "skillgate",
+  "version": "0.1.0",
+  "description": "Deterministic finish-line gates for AI coding agents. A model-independent evaluator that blocks commit/publish until your definition-of-done passes. Works in opencode, Claude Code, pre-commit and CI.",
+  "type": "module",
+  "bin": {
+    "skillgate": "dist/src/cli.js"
+  },
+  "exports": {
+    ".": "./dist/src/plugin.js",
+    "./core": "./dist/src/core.js"
+  },
+  "files": [
+    "dist/src",
+    "examples",
+    "contrib",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
+    "pretest": "npm run build",
+    "test": "node --test dist/test/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "opencode",
+    "claude-code",
+    "ai-agents",
+    "agent-guardrails",
+    "definition-of-done",
+    "pre-commit",
+    "ci",
+    "llm",
+    "gates",
+    "compliance"
+  ],
+  "license": "MIT",
+  "author": "Rene Zander",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/renezander030/skillgate.git"
+  },
+  "homepage": "https://github.com/renezander030/skillgate#readme",
+  "bugs": {
+    "url": "https://github.com/renezander030/skillgate/issues"
+  },
+  "dependencies": {
+    "tinyglobby": "^0.2.10",
+    "yaml": "^2.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.6.0"
+  }
+}

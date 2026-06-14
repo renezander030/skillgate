@@ -1,0 +1,50 @@
+# skillgate — definition of done
+#
+# Deterministic gates checked before a finish-line command (commit / push /
+# publish). No model is involved: same inputs, same verdict, every time.
+# Docs: https://github.com/renezander030/skillgate
+
+name: definition-of-done
+
+# Commands that count as "crossing the finish line". When the agent runs one of
+# these, every gate below must pass first. Substring match on the command.
+finishLine:
+  - "git commit"
+  - "git push"
+  - "gh release create"
+  - "npm publish"
+
+gates:
+  - id: tests-pass
+    description: Test suite passes
+    type: command
+    run: "npm test --silent"
+
+  - id: changelog-touched
+    description: CHANGELOG has an Unreleased entry
+    type: file-contains
+    file: CHANGELOG.md
+    pattern: "unreleased"
+    flags: "i"
+
+  - id: no-stray-todos
+    description: No TODO or FIXME comment left in source
+    type: absent
+    glob: "src/**/*.{ts,js}"
+    pattern: '(//|#)\s*(TODO|FIXME)'
+
+  - id: no-secrets
+    description: No obvious secrets or private keys committed
+    type: absent
+    glob: "**/*.{ts,js,json,md,yaml,yml,env}"
+    pattern: 'ghp_[A-Za-z0-9]{36}|sk_live_[A-Za-z0-9]{16,}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----'
+    ignore: [".skillgate/**"]
+
+  # The escape hatch for non-machine-checkable steps: the agent writes an
+  # evidence file as it works, and the gate verifies the file exists.
+  # Uncomment when a workflow has a "do the research first" style step.
+  #
+  # - id: research-recorded
+  #   description: Research step left its notes
+  #   type: evidence
+  #   file: .skillgate/evidence/research.md

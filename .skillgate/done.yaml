@@ -1,0 +1,30 @@
+# skillgate gates its own repo (dogfood). Run: npx skillgate check
+name: skillgate-self
+finishLine:
+  - "git commit"
+  - "git push"
+  - "npm publish"
+gates:
+  - id: license-and-readme
+    description: Core docs present
+    type: file-exists
+    file: ["README.md", "LICENSE"]
+
+  - id: changelog-touched
+    description: CHANGELOG has an Unreleased entry
+    type: file-contains
+    file: CHANGELOG.md
+    pattern: "unreleased"
+    flags: "i"
+
+  - id: no-stray-todos
+    description: No TODO or FIXME comment left in source
+    type: absent
+    glob: "src/**/*.ts"
+    pattern: '(//|#)\s*(TODO|FIXME)'
+
+  - id: no-secrets
+    description: No real secrets or private keys committed
+    type: absent
+    glob: "{src,test,examples,contrib}/**/*"
+    pattern: 'ghp_[A-Za-z0-9]{36}|sk_live_[A-Za-z0-9]{16,}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----'

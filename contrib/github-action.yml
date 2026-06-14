@@ -1,0 +1,18 @@
+# Drop into .github/workflows/skillgate.yml in any repo.
+# Pair with branch protection + a required status check: this layer runs
+# server-side, outside any agent's reach — the hard backstop.
+name: skillgate
+on: [pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npx -y skillgate check
