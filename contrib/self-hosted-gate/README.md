@@ -58,6 +58,12 @@ turnkey; the rest are native scripts that reuse the same provisioner. They're al
 parameterizable so a downstream project can stand up its own gate on the same VMs
 (`GATE_PROVISION` / `GATE_PUBKEY`).
 
+## Test it end-to-end
+
+[`TESTING.md`](TESTING.md) has a portable one-shot script that boots the VM and
+proves a clean push is accepted and a violating push is rejected by the server-side
+hook (no machine-specific paths).
+
 ## Optional: mirror gate-passed pushes to GitHub
 
 1. `cat ~gate/.ssh/id_ed25519.pub` on the box (also printed at provision time).
