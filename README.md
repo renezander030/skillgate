@@ -2,6 +2,8 @@
 
 > **A finish-line gate your agent cannot talk its way past.** AI coding agents deviate from your process to reach "done" faster, and asking the model to check its own compliance is the deviating party grading its own paper. `skillgate` is a deterministic evaluator that lives outside the model: it blocks the commit / push / publish until your definition-of-done actually passes. Works with **opencode** (any model you plug in), Claude Code, pre-commit, and CI.
 
+![How skillgate works: an AI agent tries to commit, skillgate runs deterministic gates outside the model, and blocks the finish line until every gate passes](assets/skillgate-flow.png)
+
 ## This is a measured, structural failure, not a vibe
 
 In [*The Compliance Gap*](https://arxiv.org/html/2605.01771v1) (Shin, 2026 — 2,031 sessions, six frontier models), models verbally agree to a process instruction and then bypass it at a **0% compliance rate** under default conditions. Two results from that paper are the entire design basis for skillgate:
