@@ -1,0 +1,53 @@
+# skillgate — definition of done for a React / Next.js app
+#
+# Deterministic review gates for AI-generated React code: the checks an LLM will
+# happily skip to reach "done". Adjust the commands to your scripts.
+# Docs: https://github.com/renezander030/skillgate
+
+name: react-definition-of-done
+
+finishLine:
+  - "git commit"
+  - "git push"
+  - "vercel deploy"
+
+gates:
+  - id: typecheck
+    description: TypeScript has no errors
+    type: command
+    run: "tsc --noEmit"
+
+  - id: lint
+    description: ESLint passes
+    type: command
+    run: "eslint . --max-warnings=0"
+
+  - id: tests-pass
+    description: Component/unit tests pass
+    type: command
+    run: "npm test --silent"
+
+  - id: no-focused-tests
+    description: No it.only / describe.only left behind (would silently skip the suite)
+    type: absent
+    glob: "src/**/*.{test,spec}.{ts,tsx,js,jsx}"
+    pattern: '\b(it|test|describe|context)\.only\('
+
+  - id: no-debug-logs
+    description: No stray console.log in shipped components
+    type: absent
+    glob: "src/**/*.{ts,tsx,js,jsx}"
+    pattern: 'console\.(log|debug)\('
+    ignore: ["**/*.{test,spec}.*"]
+
+  - id: no-dangerous-html
+    description: No unreviewed dangerouslySetInnerHTML (XSS surface)
+    type: absent
+    glob: "src/**/*.{tsx,jsx}"
+    pattern: "dangerouslySetInnerHTML"
+
+  - id: no-secrets
+    description: No client-exposed secrets or private keys
+    type: absent
+    glob: "src/**/*.{ts,tsx,js,jsx}"
+    pattern: 'sk_live_[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{36}|-----BEGIN (RSA |EC )?PRIVATE KEY-----'

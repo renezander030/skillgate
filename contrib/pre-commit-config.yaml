@@ -5,7 +5,7 @@ repos:
     hooks:
       - id: skillgate
         name: skillgate definition-of-done
-        entry: npx skillgate check
+        entry: npx @reneza/skillgate check
         language: system
         pass_filenames: false
         stages: [pre-commit]

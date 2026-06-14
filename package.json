@@ -1,6 +1,9 @@
 {
-  "name": "skillgate",
+  "name": "@reneza/skillgate",
   "version": "0.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
   "description": "Deterministic finish-line gates for AI coding agents. A model-independent evaluator that blocks commit/publish until your definition-of-done passes. Works in opencode, Claude Code, pre-commit and CI.",
   "type": "module",
   "bin": {

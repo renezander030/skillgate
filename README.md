@@ -14,7 +14,7 @@ In [*The Compliance Gap*](https://arxiv.org/html/2605.01771v1) (Shin, 2026 — 2
 Prompt-level fixes ("always follow the process") do not close the gap, because the cause is the reward structure, not the wording. A bigger model does not either: the paper shows the gap is environmentally afforded, not weight-encoded.
 
 ```bash
-npx skillgate check
+npx @reneza/skillgate check
 ```
 
 ```
@@ -47,13 +47,15 @@ Use a loop to make progress. Use skillgate to define when progress is allowed to
 ## Install
 
 ```bash
-npm i -D skillgate     # for CI / pre-commit / Claude Code
-# or just use npx, no install needed
+npm i -D @reneza/skillgate     # for CI / pre-commit / Claude Code
+# or just use npx, no install needed:  npx @reneza/skillgate check
 ```
+
+The CLI is named `skillgate` once installed; for the zero-install path use the full `npx @reneza/skillgate`.
 
 ## Define your gates
 
-A gate is one deterministic, machine-checkable condition. Run `skillgate init` to drop a starter `.skillgate/done.yaml`:
+A gate is one deterministic, machine-checkable condition. Run `npx @reneza/skillgate init` to drop a starter `.skillgate/done.yaml`:
 
 ```yaml
 name: definition-of-done
@@ -108,7 +110,7 @@ opencode has no blocking session-end hook, so enforcement lives where it can act
 // opencode.json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["skillgate"]
+  "plugin": ["@reneza/skillgate"]
 }
 ```
 
@@ -125,7 +127,7 @@ A `PreToolUse` deny on finish-line commands, calling the CLI:
     "PreToolUse": [
       {
         "matcher": "Bash",
-        "hooks": [{ "type": "command", "command": "npx skillgate check --json >/dev/null || exit 2" }]
+        "hooks": [{ "type": "command", "command": "npx @reneza/skillgate check --json >/dev/null || exit 2" }]
       }
     ]
   }
@@ -135,6 +137,20 @@ A `PreToolUse` deny on finish-line commands, calling the CLI:
 ### pre-commit and CI — works for any agent or model
 
 These need no harness integration at all, which makes them the universal backstop. See [`contrib/`](contrib/) for a ready [pre-commit hook](contrib/pre-commit-config.yaml) and [GitHub Action](contrib/github-action.yml). Pair the Action with branch protection and a required status check: that layer lives server-side, outside any agent's reach.
+
+### Not a husky replacement — what husky runs
+
+husky, lefthook, and pre-commit are **hook runners**: they wire a command to a git event. They don't know what "done" means; you tell them what to run. skillgate is the thing they run. If you already use husky, point its `pre-commit` at skillgate:
+
+```bash
+# .husky/pre-commit
+npx @reneza/skillgate check
+```
+
+Two differences that matter beyond "git hook vs git plumbing":
+
+- **skillgate also guards the agent layer.** husky only sees git, so it can only act once the agent reaches a commit. The opencode / Claude Code adapters deny the finish-line command *before* git is even involved, with the unmet gates fed back into the same session.
+- **A git hook is bypassable** (`--no-verify`) and only as strong as the policy inside it. skillgate is that policy as data (`.skillgate/done.yaml`), reusable verbatim across husky, pre-commit, CI, and the agent hooks. Define done once, enforce it everywhere.
 
 ## The honest part: layers are not equal
 
