@@ -2,6 +2,8 @@
 
 > **A finish-line gate your agent cannot talk its way past.** AI coding agents deviate from your process to reach "done" faster, and asking the model to check its own compliance is the deviating party grading its own paper. `skillgate` is a deterministic evaluator that lives outside the model: it blocks the commit / push / publish until your definition-of-done actually passes. Works with **opencode** (any model you plug in), Claude Code, pre-commit, and CI.
 
+![skillgate blocking a git commit because two gates fail, then letting it through once they are fixed](assets/skillgate-demo.gif)
+
 ![How skillgate works: an AI agent tries to commit, skillgate runs deterministic gates outside the model, and blocks the finish line until every gate passes](assets/skillgate-flow.png)
 
 ## This is a measured, structural failure, not a vibe
@@ -52,6 +54,12 @@ npm i -D @reneza/skillgate     # for CI / pre-commit / Claude Code
 ```
 
 The CLI is named `skillgate` once installed; for the zero-install path use the full `npx @reneza/skillgate`.
+
+No Node on the machine? Run it in a container against the current directory:
+
+```bash
+docker run --rm -v "$PWD":/repo -w /repo node:20-alpine npx -y @reneza/skillgate check
+```
 
 ## Define your gates
 
@@ -161,6 +169,13 @@ Two differences that matter beyond "git hook vs git plumbing":
 | CI + branch protection | **Hard** — runs server-side, the agent has no write access to it |
 
 Use the harness hooks for fast feedback in the loop; rely on CI for the guarantee.
+
+## Related
+
+Two more gates from the same principle — a deterministic check the agent cannot route around:
+
+- **[agent-approval-gate](https://github.com/renezander030/agent-approval-gate)** — gates an agent's *real-world actions* (send email, update a CRM, call an API) behind human approval and an audit log, instead of the dev finish line. Different boundary, same family: skillgate decides *"is it done?"*, agent-approval-gate decides *"should this action fire, and who approved it?"*
+- **[adrift](https://github.com/renezander030/adrift)** — keeps your agent instruction files (CLAUDE.md, AGENTS.md, Cursor, Copilot) from drifting out of sync.
 
 ## License
 
