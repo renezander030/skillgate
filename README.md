@@ -172,9 +172,10 @@ Use the harness hooks for fast feedback in the loop; rely on CI for the guarante
 
 ## Related
 
-Two more gates from the same principle — a deterministic check the agent cannot route around:
+Same conviction in every one of these — *the model suggests, a deterministic boundary it can't route around decides* — applied at a different layer of the stack:
 
-- **[agent-approval-gate](https://github.com/renezander030/agent-approval-gate)** — gates an agent's *real-world actions* (send email, update a CRM, call an API) behind human approval and an audit log, instead of the dev finish line. Different boundary, same family: skillgate decides *"is it done?"*, agent-approval-gate decides *"should this action fire, and who approved it?"*
+- **[draftcat](https://github.com/renezander030/draftcat)** — the principle at the **business-operations** layer. A self-hosted Go pipeline engine where the LLM can't fire customer-facing actions (email, CRM, lead replies, voice) without passing deterministic checks and a human operator's sign-off. skillgate is the same idea at the **engineering** layer: it gates *shipping code* instead of *contacting customers*, and its judge is an automated check rather than a human approver (because "do the tests pass?" doesn't need a person).
+- **[agent-approval-gate](https://github.com/renezander030/agent-approval-gate)** — the minimal *pattern* (schemas + examples) behind that approval step: gate an agent's real-world actions behind human approval and an audit log. skillgate decides *"is it done?"*; agent-approval-gate decides *"should this action fire, and who approved it?"*
 - **[adrift](https://github.com/renezander030/adrift)** — keeps your agent instruction files (CLAUDE.md, AGENTS.md, Cursor, Copilot) from drifting out of sync.
 
 ## License
