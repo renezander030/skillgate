@@ -1,38 +1,69 @@
-# Self-hosted gate — the hard layer, free, for private repos
+# Self-hosted gate — put the evaluator outside the AI agent
 
-The main README's **hard** layer is *CI + branch protection*: it runs server-side,
-outside the agent's reach. But GitHub **does not enforce branch protection on
-private repos under a Free personal account** (it asks you to upgrade to Team/
-Enterprise). So for a lot of solo and private projects, the only *hard* layer in the
-table is unavailable.
+## The idea, in one sentence
 
-This contrib closes that gap with no paid tier and no cloud: run skillgate as a
-**server-side `pre-receive` hook** on a tiny VM (or any box) the agent can't log
-into. Two facts make it genuinely hard:
+**The thing that decides "is this done?" must run somewhere your AI coding agent
+cannot reach or edit.**
 
-1. **`git push --no-verify` skips *client* hooks only.** A server-side `pre-receive`
-   always runs — the agent can't disable it from its side.
-2. **The definition of done lives on the box** (`/opt/skillgate/.skillgate/`). The
-   agent can push but not SSH in (the `gate` user's shell is `git-shell`), so it
-   can't weaken `done.yaml` by editing what it pushes — the hook restores the
-   pinned spec before checking.
+Here's why that matters. skillgate checks a change against a *definition of done*
+before it's allowed through. If that check runs on the same machine as the agent,
+at the agent's privilege level, then the agent can defeat it the same way it would
+defeat any local rule:
+
+- skip it (`git push --no-verify` skips client-side hooks),
+- edit the check (rewrite the hook script),
+- or move the goalposts (edit `done.yaml` so the unfinished work now "passes").
+
+A local hook is a reminder, not a guarantee. To get a guarantee you move the
+evaluator *off the agent's reach* — onto a separate machine, VM, or container that
+the agent can only talk to through a narrow channel (`git push`), never log into.
+Then the agent can propose a change, but something it doesn't control decides
+whether the change is done. That is the whole trick.
 
 ```
-┌─ dev box (the agent) ─┐   git push    ┌─ gate box (VM) ─────────────────────┐
-│  remote gate ─────────┼─────────────▶ │  bare repo + pre-receive:           │
-│  cannot ssh in        │   (ssh)       │    skillgate check vs the PINNED     │
-│  no upstream creds*   │ ◀──────────── │    .skillgate/done.yaml → reject/ok  │
-└────────────────────────┘ accept/reject│  post-receive: on PASS, mirror to   │
-                                         │    upstream with a box-only key      │
-                                         └──────────────────────────────────────┘
+┌─ your machine (the AI agent) ─┐  git push   ┌─ the evaluator (agent can't enter) ─┐
+│  can edit code                │ ──────────▶ │  bare repo + pre-receive hook:      │
+│  can run --no-verify          │   (ssh)     │    skillgate check  vs  the PINNED   │
+│  CANNOT edit the hook         │ ◀────────── │    done.yaml that lives HERE         │
+│  CANNOT edit done.yaml        │ accept/deny │  → reject the push, or accept it     │
+└───────────────────────────────┘             └──────────────────────────────────────┘
 ```
 
-\* To make it fully agent-proof, the agent must not hold the upstream push
-credential — otherwise it can bypass the box by pushing to GitHub directly. Put the
-upstream write credential (a deploy key) only on the gate box and have
-`post-receive` mirror accepted pushes. Then the box is the sole path to upstream.
+It also closes a real gap: GitHub's own "hard" layer (CI + branch protection)
+**isn't enforced on private repos under a Free personal account**, so a lot of solo
+and private projects can't use it. This gives you the same guarantee for free, on a
+box you control.
 
-## Quick start (free: VirtualBox + Vagrant)
+## What makes it actually hard (two invariants)
+
+Get these two right and the substrate barely matters:
+
+1. **The agent can't edit the evaluator.** The definition of done and the hook live
+   on the box; the `gate` user's shell is `git-shell`, so a push can't turn into a
+   login. The hook also restores the box's pinned `done.yaml` over whatever was
+   pushed, so the policy can't be smuggled in through the tree.
+2. **The agent doesn't hold the upstream push credential.** This is the load-bearing
+   one. If the agent can push to GitHub directly, it bypasses the gate no matter how
+   it's hosted. Put the upstream write key only on the gate box and let
+   `post-receive` mirror accepted pushes (see *Mirror to upstream* below).
+
+## Pick a substrate by how well your agent is already sandboxed
+
+The boundary can be anything the agent's privileges don't extend into. Stronger
+sandboxing of the agent lets you use a lighter gate.
+
+| Substrate | Boundary | Use when | Recipe |
+|---|---|---|---|
+| **Remote VPS** | Strongest — a separate machine, no login for the agent | you want the CI-grade guarantee | [`vps/`](vps/) |
+| **VM (VirtualBox + Vagrant)** | Strong — separate kernel, local, free, offline | no server, no cloud account | this dir ([below](#vm-virtualbox--vagrant)) |
+| **Docker container** | Good *if* the agent has no Docker socket and no creds | you already run containers | [`docker/`](docker/) |
+| Another local folder, same user | **None** — the agent can edit it | (don't; it's just a client hook) | — |
+
+All three real options run the *same* `pre-receive` gate and the *same* shared
+installer ([`gate-install.sh`](gate-install.sh)); only "make the box" and "start
+sshd" differ.
+
+## VM (VirtualBox + Vagrant)
 
 ```sh
 cd contrib/self-hosted-gate
@@ -44,47 +75,37 @@ git remote add gate ssh://gate@127.0.0.1:2222/srv/repos/repo.git
 git push gate main      # rejected unless `skillgate check` passes
 ```
 
-No Vagrant? `provision.sh` is a plain Alpine script — create a VirtualBox VM with a
+No Vagrant? `provision.sh` is a plain Alpine script — make a VirtualBox VM with a
 NAT port-forward (host 2222 → guest 22), copy `pre-receive`, `post-receive`,
-`done.yaml` into `/tmp`, and run it as root.
+`done.yaml` into `/tmp`, and run it as root. [`TESTING.md`](TESTING.md) has a
+portable end-to-end test (clean push accepted, violating push rejected).
 
-### Other hypervisors
+Other hypervisors (KVM, Hyper-V, VMware, ESXi/vSphere, XCP-ng, bhyve, WSL2) are a
+labelled community follow-up rather than shipped here, so this stays to paths that
+are tested end-to-end.
 
-The gate guest is just an Alpine VM, so it runs on any hypervisor — only VM
-creation differs. The provisioner (`provision.sh`) is the single source of truth;
-point any VM with root SSH at it. Recipes for KVM, Hyper-V, VMware, ESXi/vSphere,
-XCP-ng, bhyve, and WSL2 are tracked as a community follow-up rather than shipped
-here, so this contrib stays to the one path that is tested end-to-end (VirtualBox
-+ Vagrant).
+## Mirror to upstream (makes it the only path to GitHub)
 
-## Test it end-to-end
-
-[`TESTING.md`](TESTING.md) has a portable one-shot script that boots the VM and
-proves a clean push is accepted and a violating push is rejected by the server-side
-hook (no machine-specific paths).
-
-## Optional: mirror gate-passed pushes to GitHub
-
-1. `cat ~gate/.ssh/id_ed25519.pub` on the box (also printed at provision time).
+1. Get the gate box's deploy key: it's printed at provision time, or
+   `cat ~gate/.ssh/id_ed25519.pub` on the box (`docker compose logs gate` for the
+   container).
 2. GitHub repo → Settings → Deploy keys → add it with **write** access.
 3. Set `SKILLGATE_UPSTREAM=git@github.com:you/repo.git` in the `post-receive`
-   environment (e.g. export it in the gate user's profile, or hardcode in the hook).
-4. Drop the agent's direct GitHub push ability. Now nothing ungated reaches GitHub.
+   environment on the box.
+4. Remove the agent's own GitHub push ability. Now nothing ungated reaches GitHub.
 
 ## Notes
 
-- `command`-type gates (e.g. `npm test`) run in the pushed tree on the box, so the
-  box needs your build deps (add an `npm ci` step to `provision.sh`). Pure
-  filesystem gates (file-exists / file-contains / absent / evidence) need nothing.
+- `command`-type gates (e.g. `npm test`) run the *pushed tree's code* on the gate
+  box, so it needs your build deps. Filesystem gates (file-exists / contains /
+  absent / evidence) need nothing.
 - **Threat model for `command`-type gates plus the upstream mirror.** A `command`
-  gate executes the *pushed tree's code* on the gate box. If that same box also
-  holds the upstream deploy key (the mirror setup above), a malicious push can run
-  code that reads `~gate/.ssh/id_ed25519` and pushes to upstream directly, which
-  defeats the gate. So: use only **filesystem** gates when the box also mirrors to
-  upstream, or keep the upstream credential off the gate box. Filesystem-only gates
-  don't execute pushed code and are safe to combine with the mirror.
-- The version of skillgate the hook runs is pinned (`SKILLGATE_VERSION`, default in
-  `pre-receive`/`provision.sh`) so a push can't pull a different package off npm
-  than the box was provisioned with.
+  gate executes pushed code on the box. If that same box also holds the upstream
+  deploy key, a malicious push can read `~gate/.ssh/id_ed25519` and push upstream
+  directly, defeating the gate. So use **filesystem-only** gates when the box also
+  mirrors to upstream, or keep the upstream credential off the box.
+- The skillgate version the hook runs is pinned (`SKILLGATE_VERSION`, default
+  `0.1.0`) so a push can't pull a different package off npm than the box was built
+  with.
 - The pinned `done.yaml` is updated by re-provisioning — a deliberate admin action,
   not something the agent can do.
