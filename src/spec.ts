@@ -48,12 +48,25 @@ export interface EvidenceGate extends BaseGate {
   file: string;
 }
 
+/**
+ * Every AI agent instruction file in the repo (CLAUDE.md, AGENTS.md,
+ * .cursor/rules, copilot-instructions.md, ...) must still agree with the
+ * canonical one. Drift means your agents are reading different rulebooks.
+ * Ported from adrift.
+ */
+export interface InstructionSyncGate extends BaseGate {
+  type: "instruction-sync";
+  /** Similarity ratio required to count as in sync (0..1). Default 0.95. */
+  threshold?: number;
+}
+
 export type Gate =
   | FileExistsGate
   | FileContainsGate
   | AbsentGate
   | CommandGate
-  | EvidenceGate;
+  | EvidenceGate
+  | InstructionSyncGate;
 
 export interface Spec {
   name?: string;

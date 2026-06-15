@@ -3,6 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { findSpecPath, loadSpec } from "./spec.js";
 import { runGates } from "./core.js";
+import { checkDrift, DEFAULT_THRESHOLD } from "./drift.js";
+import { runSync } from "./link.js";
 
 const C = {
   reset: "\x1b[0m",
@@ -50,11 +52,16 @@ function help(): void {
 Usage:
   skillgate check [spec]   run gates, exit 1 if any fail
   skillgate init           write an example .skillgate/done.yaml
+  skillgate drift          report AI instruction-file drift, exit 1 if drifted
+  skillgate sync           make AGENTS.md canonical and link the rest
   skillgate --version
 
 Flags:
-  --json                   machine-readable output
-  --cwd <dir>              run against another directory`);
+  --json                   machine-readable output (check, drift)
+  --cwd <dir>              run against another directory
+  --threshold <0..1>       drift: similarity required to count as in sync (default 0.95)
+  --dry-run                sync: show what would change without writing
+  --symlink                sync: use symlinks instead of pointer files and copies`);
 }
 
 function version(): void {
@@ -126,6 +133,44 @@ if (cmd === "check") {
       result.failed.map((f) => f.id).join(", "),
   );
   process.exit(1);
+}
+
+if (cmd === "drift") {
+  const tIdx = args.indexOf("--threshold");
+  const threshold = tIdx >= 0 ? Number(args[tIdx + 1]) : DEFAULT_THRESHOLD;
+  const res = checkDrift(cwd, threshold);
+
+  if (json) {
+    console.log(JSON.stringify(res, null, 2));
+    process.exit(res.drifted > 0 ? 1 : 0);
+  }
+
+  if (res.entries.length === 0) {
+    console.log("no agent instruction files found");
+    process.exit(0);
+  }
+  console.log(`canonical: ${c(C.bold, res.canonical)}\n`);
+  for (const e of res.entries) {
+    const mark = e.status === "drifted" ? c(C.red, "✗") : c(C.green, "✓");
+    const pct = `${Math.round(e.similarity * 100)}%`;
+    console.log(`  ${mark} ${e.tool.padEnd(16)} ${e.status.padEnd(10)} ${pct.padStart(4)}  ${c(C.dim, e.files.join(", "))}`);
+  }
+  console.log("");
+  if (res.drifted === 0) {
+    console.log(c(C.green, `✓ all ${res.entries.length} instruction files in sync`));
+    process.exit(0);
+  }
+  console.log(c(C.red, `✗ ${res.drifted} of ${res.entries.length} instruction files drifted`) + ` — run \`skillgate sync\``);
+  process.exit(1);
+}
+
+if (cmd === "sync") {
+  const { lines } = runSync(cwd, {
+    dryRun: args.includes("--dry-run"),
+    symlink: args.includes("--symlink"),
+  });
+  for (const l of lines) console.log(l);
+  process.exit(0);
 }
 
 console.error(`unknown command: ${cmd}\n`);

@@ -105,8 +105,33 @@ gates:
 | `absent` | `pattern` appears in **no** file matched by `glob` (reports `file:line`) |
 | `command` | `run` exits 0 — only as deterministic as the command |
 | `evidence` | a named `file` exists and is non-empty |
+| `instruction-sync` | every AI agent instruction file (CLAUDE.md, AGENTS.md, Cursor, Copilot…) still agrees with the canonical one (optional `threshold`, default 0.95) |
 
 **The `evidence` escape hatch.** Gates only see machine-observable output. For a step like "research the API first," have the agent write `.skillgate/evidence/research.md` as it works and gate on that file. Otherwise the step is invisible and the deviation hides.
+
+## Keep your agents reading the same rulebook
+
+Every AI coding tool reads a different instruction file — `CLAUDE.md`, `AGENTS.md`, `.cursor/rules`, `.github/copilot-instructions.md`, `GEMINI.md`, `.clinerules`, `.windsurf/rules`, `.junie/guidelines.md` — and nothing keeps them in sync, so they quietly drift apart until each agent follows a different process. The `instruction-sync` gate fails the finish line when that happens. Two standalone commands back it:
+
+```bash
+npx @reneza/skillgate drift          # report drift, exit 1 if any file diverged
+npx @reneza/skillgate drift --json   # machine-readable, for scripts and agents
+npx @reneza/skillgate sync           # make AGENTS.md canonical, link the rest
+npx @reneza/skillgate sync --dry-run # preview without writing
+npx @reneza/skillgate sync --symlink # use symlinks instead of pointer files/copies
+```
+
+```
+canonical: AGENTS.md
+
+  ✓ AGENTS.md        canonical  100%  AGENTS.md
+  ✓ Claude Code      linked     100%  CLAUDE.md
+  ✗ GitHub Copilot   drifted     25%  .github/copilot-instructions.md
+
+✗ 1 of 3 instruction files drifted — run `skillgate sync`
+```
+
+`sync` understands harness semantics, not just bytes: import-capable tools (Claude Code, Gemini) get a one-line `@AGENTS.md` pointer, the rest get a synced copy, `@AGENTS.md` imports and symlinks already count as linked, and Cursor's `.mdc` frontmatter is per-tool config that's ignored in comparison. The canonical source is `AGENTS.md` when present, otherwise the freshest file. (This capability was the standalone `adrift` tool, now folded in.)
 
 ## Wire it into your agent
 
@@ -179,7 +204,8 @@ Same conviction in every one of these — *the model suggests, a deterministic b
 
 - **[draftcat](https://github.com/renezander030/draftcat)** — the principle at the **business-operations** layer. A self-hosted Go pipeline engine where the LLM can't fire customer-facing actions (email, CRM, lead replies, voice) without passing deterministic checks and a human operator's sign-off. skillgate is the same idea at the **engineering** layer: it gates *shipping code* instead of *contacting customers*, and its judge is an automated check rather than a human approver (because "do the tests pass?" doesn't need a person).
 - **[agent-approval-gate](https://github.com/renezander030/agent-approval-gate)** — the minimal *pattern* (schemas + examples) behind that approval step: gate an agent's real-world actions behind human approval and an audit log. skillgate decides *"is it done?"*; agent-approval-gate decides *"should this action fire, and who approved it?"*
-- **[adrift](https://github.com/renezander030/adrift)** — keeps your agent instruction files (CLAUDE.md, AGENTS.md, Cursor, Copilot) from drifting out of sync.
+
+> **adrift** (instruction-file drift detection) is now part of skillgate — see [`drift` and `sync`](#keep-your-agents-reading-the-same-rulebook) above.
 
 ## License
 

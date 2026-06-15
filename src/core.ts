@@ -3,6 +3,7 @@ import path from "node:path";
 import { execSync } from "node:child_process";
 import { globSync } from "tinyglobby";
 import type { Spec, Gate } from "./spec.js";
+import { checkDrift, DEFAULT_THRESHOLD } from "./drift.js";
 
 export interface GateResult {
   id: string;
@@ -75,6 +76,22 @@ function checkGate(gate: Gate, cwd: string): GateResult {
         if (!fs.existsSync(full)) return { ...base, ok: false, reason: `evidence missing: ${gate.file}` };
         if (fs.statSync(full).size === 0) return { ...base, ok: false, reason: `evidence empty: ${gate.file}` };
         return { ...base, ok: true, reason: `evidence present: ${gate.file}` };
+      }
+      case "instruction-sync": {
+        const threshold = gate.threshold ?? DEFAULT_THRESHOLD;
+        const res = checkDrift(cwd, threshold);
+        if (res.entries.length === 0) {
+          return { ...base, ok: true, reason: `no agent instruction files found` };
+        }
+        if (res.drifted === 0) {
+          return { ...base, ok: true, reason: `${res.entries.length} instruction files in sync with ${res.canonical}` };
+        }
+        const names = res.entries.filter((e) => e.status === "drifted").map((e) => e.tool);
+        return {
+          ...base,
+          ok: false,
+          reason: `${res.drifted} of ${res.entries.length} instruction files drifted from ${res.canonical}: ${names.join(", ")} (run \`skillgate sync\`)`,
+        };
       }
       default:
         return { ...base, ok: false, reason: `unknown gate type` };
