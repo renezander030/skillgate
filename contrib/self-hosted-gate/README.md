@@ -57,11 +57,19 @@ sandboxing of the agent lets you use a lighter gate.
 | **Remote VPS** | Strongest — a separate machine, no login for the agent | you want the CI-grade guarantee | [`vps/`](vps/) |
 | **VM (VirtualBox + Vagrant)** | Strong — separate kernel, local, free, offline | no server, no cloud account | this dir ([below](#vm-virtualbox--vagrant)) |
 | **Docker container** | Good *if* the agent has no Docker socket and no creds | you already run containers | [`docker/`](docker/) |
-| Another local folder, same user | **None** — the agent can edit it | (don't; it's just a client hook) | — |
+| **Local folder** | Real **if** your agent is sandboxed out of it — confined to its own dir/user with no path to the gate files or the deploy key | your agent already runs strictly confined | [`gate-install.sh`](gate-install.sh) against a local bare repo owned by another user |
 
-All three real options run the *same* `pre-receive` gate and the *same* shared
-installer ([`gate-install.sh`](gate-install.sh)); only "make the box" and "start
-sshd" differ.
+A local folder is the lightest option, and it is a genuine boundary **when the
+agent is properly sandboxed**: if the agent is confined (its own user, its own
+directory, no path to the gate's bare repo, `done.yaml`, or deploy key), it cannot
+edit the evaluator any more than it could reach into a VM. The only case that gives
+*no* boundary is the unsandboxed one — an agent running as your user with full
+filesystem access can just edit the hook or the `done.yaml`. So the rule is the
+heading: the better the agent is sandboxed, the lighter the gate can be.
+
+Every option runs the *same* `pre-receive` gate and the *same* shared installer
+([`gate-install.sh`](gate-install.sh)); only "make the box" and "start sshd" differ
+(a local folder skips both — it just needs the installer against a bare repo).
 
 ## VM (VirtualBox + Vagrant)
 
