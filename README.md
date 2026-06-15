@@ -146,7 +146,7 @@ A `PreToolUse` deny on finish-line commands, calling the CLI:
 
 These need no harness integration at all, which makes them the universal backstop. See [`contrib/`](contrib/) for a ready [pre-commit hook](contrib/pre-commit-config.yaml) and [GitHub Action](contrib/github-action.yml). Pair the Action with branch protection and a required status check: that layer lives server-side, outside any agent's reach.
 
-> **Private repo, Free account?** GitHub doesn't enforce branch protection on private repos under a Free personal plan — so the only *hard* layer above is unavailable. Get the same guarantee for free with a self-hosted server-side `pre-receive` gate on a tiny VM: [`contrib/self-hosted-gate`](contrib/self-hosted-gate/). `git push --no-verify` can't skip a server hook, and the definition of done lives on a box the agent can't log into.
+> **Private repo, Free account?** GitHub doesn't enforce branch protection on private repos under a Free personal plan — so the only *hard* layer above is unavailable. Get the same guarantee for free by running the evaluator somewhere the agent can't reach: a self-hosted server-side `pre-receive` gate on a [VM, a Docker container, or a small remote VPS](contrib/self-hosted-gate/). `git push --no-verify` can't skip a server hook, and the definition of done lives on a box the agent can't log into. Pick the substrate by how well your agent is already sandboxed — see [`contrib/self-hosted-gate`](contrib/self-hosted-gate/).
 
 ### Not a husky replacement — what husky runs
 
