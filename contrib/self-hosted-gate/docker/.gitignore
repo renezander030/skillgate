@@ -1,0 +1,5 @@
+# Local runtime / secrets — never commit these.
+authorized_key.pub
+done.yaml
+push_key
+push_key.pub

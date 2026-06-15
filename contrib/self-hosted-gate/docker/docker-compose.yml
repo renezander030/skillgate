@@ -1,0 +1,32 @@
+# docker-compose.yml — run the skillgate gate as a container.
+#
+# The gate logic and definition of done live INSIDE the image, never bind-mounted
+# read-write, so the agent can't edit them. For this to be a real boundary:
+#   1. the AI agent must NOT have access to the Docker socket (socket access is
+#      root on the host: it could exec into this container and read the deploy key);
+#   2. the agent must NOT hold the upstream push credential (else it skips the gate
+#      and pushes to GitHub directly).
+# See ./README.md.
+services:
+  gate:
+    build:
+      context: ..                 # parent (self-hosted-gate/) holds the shared hooks
+      dockerfile: docker/Dockerfile
+    # Bind only to localhost: push to ssh://gate@127.0.0.1:2222/srv/repos/repo.git
+    ports:
+      - "127.0.0.1:2222:22"
+    volumes:
+      # REQUIRED, read-only: the public key you push with. Create it first:
+      #   ssh-keygen -t ed25519 -f ./push_key  &&  cp push_key.pub authorized_key.pub
+      - ./authorized_key.pub:/run/authorized_key.pub:ro
+      # OPTIONAL, read-only: pin your own definition of done. Uncomment + provide it,
+      # else the container initialises a default skillgate spec.
+      # - ./done.yaml:/run/done.yaml:ro
+      # Persist the bare repo + the box-only deploy key across restarts.
+      - gate-repo:/srv/repos
+      - gate-ssh:/home/gate/.ssh
+    restart: unless-stopped
+
+volumes:
+  gate-repo:
+  gate-ssh:
