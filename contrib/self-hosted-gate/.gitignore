@@ -1,0 +1,7 @@
+# Local runtime / test artifacts — never commit these.
+authorized_key.pub
+done.yaml
+test_push_key
+test_push_key.pub
+.skillgate/
+.vagrant/

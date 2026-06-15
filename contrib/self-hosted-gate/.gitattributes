@@ -1,0 +1,6 @@
+# These run inside the Alpine gate box; force LF so a Windows checkout can't ship
+# CRLF that breaks `#!/bin/sh`.
+pre-receive  text eol=lf
+post-receive text eol=lf
+*.sh         text eol=lf
+Vagrantfile  text eol=lf
