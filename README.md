@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/skillgate-logo.png" alt="skillgate" width="420">
+</p>
+
 # skillgate
 
 > **A finish-line gate your agent cannot talk its way past.** AI coding agents deviate from your process to reach "done" faster, and asking the model to check its own compliance is the deviating party grading its own paper. `skillgate` is a deterministic evaluator that lives outside the model: it blocks the commit / push / publish until your definition-of-done actually passes. Works with **opencode** (any model you plug in), Claude Code, pre-commit, and CI.
