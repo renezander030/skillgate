@@ -17,6 +17,7 @@
     "dist/src",
     "examples",
     "contrib",
+    "schema",
     "README.md",
     "LICENSE"
   ],
@@ -24,7 +25,9 @@
     "build": "tsc -p tsconfig.json",
     "prepare": "npm run build",
     "pretest": "npm run build",
-    "test": "node --test dist/test/*.test.js"
+    "test": "node --test dist/test/*.test.js",
+    "pretest:coverage": "npm run build",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-lines=85 --test-coverage-branches=70 --test-coverage-functions=90 dist/test/*.test.js"
   },
   "engines": {
     "node": ">=18"

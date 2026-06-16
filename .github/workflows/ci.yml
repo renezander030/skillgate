@@ -9,11 +9,13 @@ permissions:
   contents: read
 
 jobs:
+  # Primary job — its check context is exactly "test" (kept stable for branch
+  # protection). Runs on the active LTS.
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
           node-version: '20'
           cache: npm
@@ -22,3 +24,35 @@ jobs:
       - run: npm test
       # dogfood: skillgate gates its own repo
       - run: node dist/src/cli.js check
+
+  # Compatibility coverage across the rest of the supported range.
+  compat:
+    name: compat (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18', '22']
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  coverage:
+    name: coverage gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      # Thresholds (lines/branches/functions) live in package.json's test:coverage
+      # script; the --test-coverage-* flags fail the run when coverage drops below them.
+      - run: npm run test:coverage

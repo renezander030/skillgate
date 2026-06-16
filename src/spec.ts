@@ -69,11 +69,21 @@ export type Gate =
   | InstructionSyncGate;
 
 export interface Spec {
+  /**
+   * Spec format version. Optional and backward-compatible: an omitted version is
+   * treated as the current format. Bump only on a breaking change to the schema;
+   * skillgate warns (it does not refuse) when a spec declares a version newer than
+   * it understands, so an older CLI degrades loudly rather than silently.
+   */
+  version?: number;
   name?: string;
   /** Commands that count as crossing the finish line (substring match). */
   finishLine?: string[];
   gates: Gate[];
 }
+
+/** The spec format version this build understands. See docs/compatibility.md. */
+export const SPEC_VERSION = 1;
 
 export const DEFAULT_SPEC_PATHS = [
   ".skillgate/done.yaml",
@@ -97,6 +107,16 @@ export function loadSpec(specPath: string): Spec {
   const data = specPath.endsWith(".json") ? JSON.parse(raw) : parseYaml(raw);
   if (!data || !Array.isArray(data.gates)) {
     throw new Error(`invalid spec ${specPath}: missing "gates" array`);
+  }
+  if (data.version != null) {
+    if (typeof data.version !== "number" || !Number.isInteger(data.version)) {
+      throw new Error(`invalid spec ${specPath}: "version" must be an integer`);
+    }
+    if (data.version > SPEC_VERSION) {
+      console.warn(
+        `skillgate: spec ${specPath} declares version ${data.version} but this build understands up to ${SPEC_VERSION} — upgrade skillgate; some gates may be misread`,
+      );
+    }
   }
   return data as Spec;
 }

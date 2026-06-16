@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/renezander030/skillgate/master/schema/done.schema.json
 # skillgate — definition of done
 #
 # Deterministic gates checked before a finish-line command (commit / push /

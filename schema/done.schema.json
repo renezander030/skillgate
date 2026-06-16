@@ -1,0 +1,129 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/renezander030/skillgate/master/schema/done.schema.json",
+  "title": "skillgate definition-of-done",
+  "description": "Schema for .skillgate/done.yaml — deterministic finish-line gates.",
+  "type": "object",
+  "required": ["gates"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Spec format version. Omit for the current format."
+    },
+    "name": {
+      "type": "string",
+      "description": "A label for this definition of done."
+    },
+    "finishLine": {
+      "type": "array",
+      "description": "Commands that count as crossing the finish line (substring match).",
+      "items": { "type": "string" }
+    },
+    "gates": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/gate" }
+    }
+  },
+  "definitions": {
+    "base": {
+      "properties": {
+        "id": { "type": "string" },
+        "description": { "type": "string" }
+      },
+      "required": ["id"]
+    },
+    "gate": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "file"],
+          "properties": {
+            "id": { "type": "string" },
+            "description": { "type": "string" },
+            "type": { "const": "file-exists" },
+            "file": {
+              "oneOf": [
+                { "type": "string" },
+                { "type": "array", "items": { "type": "string" } }
+              ],
+              "description": "Path or paths that must all exist."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "file", "pattern"],
+          "properties": {
+            "id": { "type": "string" },
+            "description": { "type": "string" },
+            "type": { "const": "file-contains" },
+            "file": { "type": "string" },
+            "pattern": { "type": "string", "description": "JavaScript regular expression source." },
+            "flags": { "type": "string", "description": "Regex flags, e.g. \"i\"." }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "glob", "pattern"],
+          "properties": {
+            "id": { "type": "string" },
+            "description": { "type": "string" },
+            "type": { "const": "absent" },
+            "glob": { "type": "string", "description": "Files to scan." },
+            "pattern": { "type": "string", "description": "Regex that must NOT appear." },
+            "flags": { "type": "string" },
+            "ignore": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Extra globs to exclude (fixtures, examples, the spec itself)."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "run"],
+          "properties": {
+            "id": { "type": "string" },
+            "description": { "type": "string" },
+            "type": { "const": "command" },
+            "run": { "type": "string", "description": "Shell command; must exit 0." }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "file"],
+          "properties": {
+            "id": { "type": "string" },
+            "description": { "type": "string" },
+            "type": { "const": "evidence" },
+            "file": { "type": "string", "description": "A file that must exist and be non-empty." }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type"],
+          "properties": {
+            "id": { "type": "string" },
+            "description": { "type": "string" },
+            "type": { "const": "instruction-sync" },
+            "threshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Similarity required to count as in sync (default 0.95)."
+            }
+          }
+        }
+      ]
+    }
+  }
+}

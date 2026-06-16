@@ -17,7 +17,8 @@ const C = {
 const useColor = process.stdout.isTTY;
 const c = (code: string, s: string) => (useColor ? code + s + C.reset : s);
 
-const EXAMPLE = `# skillgate — definition of done
+const EXAMPLE = `# yaml-language-server: $schema=https://raw.githubusercontent.com/renezander030/skillgate/master/schema/done.schema.json
+# skillgate — definition of done
 # Docs: https://github.com/renezander030/skillgate
 name: definition-of-done
 
