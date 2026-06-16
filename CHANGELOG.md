@@ -7,7 +7,7 @@
 - JSON Schema at `schema/done.schema.json`; generated and example specs carry a `# yaml-language-server:` modeline for editor autocomplete and validation. Schema ships in the npm package.
 - `docs/`: quickstart, spec reference, recipes, architecture, and a compatibility/deprecation policy (including the documented exit-code contract).
 - Community health files: `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, issue templates, and a pull-request template.
-- Tag-driven release workflow (`npm publish --provenance` + GitHub Release from the CHANGELOG section) and a CodeQL analysis workflow.
+- Tag-driven release workflow (`npm publish --provenance` + GitHub Release from the CHANGELOG section).
 - `test/e2e.test.ts`: the CLI is now covered end-to-end as a real process; `test/spec.test.ts` covers spec loading and versioning.
 
 ### Changed
