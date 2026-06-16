@@ -26,7 +26,7 @@ npx @reneza/skillgate@latest check    # scores your definition-of-done, right no
 ✗ 2 of 4 gates unmet: changelog-touched, no-stray-todos
 ```
 
-Exit code 1 — and in an agent harness the finish-line command (commit / push / publish) never runs. Caught a corner you would have shipped? That is the whole pitch: **⭐ star the repo** and [wire it into your agent](#install) in about a minute.
+Exit code 1 — and in an agent harness the finish-line command (commit / push / publish) never runs. [Wire it into your agent.](#install)
 
 ## This is a measured, structural failure, not a vibe
 
