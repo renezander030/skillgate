@@ -8,25 +8,17 @@
 
 ![skillgate blocking a git commit because two gates fail, then letting it through once they are fixed](assets/skillgate-demo.gif)
 
-## Get a verdict on your repo in 30 seconds
+## Audit your repo in one command
 
-No install, no signup, nothing to read first. Point it at any repo and see which corners your agent has been cutting:
+No install, no signup, no config. One read-only command shows which corners your agent could cut right now:
 
 ```bash
-npx @reneza/skillgate@latest init     # writes a starter .skillgate/done.yaml
-npx @reneza/skillgate@latest check    # scores your definition-of-done, right now
+npx @reneza/skillgate@latest audit
 ```
 
-```
-  ✓ tests-pass        `npm test` exited 0
-  ✓ no-secrets        no /sk_live_|ghp_.../ in **/*
-  ✗ changelog-touched CHANGELOG.md missing /unreleased/i
-  ✗ no-stray-todos    src/api.ts:42 matches /TODO|FIXME/
+![skillgate audit: a one-command, read-only report scoring a repo against a definition of done — passing the test gate, flagging a stray TODO and a leaked secret](assets/skillgate-audit.png)
 
-✗ 2 of 4 gates unmet: changelog-touched, no-stray-todos
-```
-
-Exit code 1 — and in an agent harness the finish-line command (commit / push / publish) never runs. [Wire it into your agent.](#install)
+Wired into your agent, those same checks deny the finish-line command (commit / push / publish) until they pass. [Wire it in.](#install)
 
 ## This is a measured, structural failure, not a vibe
 
@@ -37,9 +29,7 @@ In [*The Compliance Gap*](https://arxiv.org/html/2605.01771v1) (Shin, 2026 — 2
 
 Prompt-level fixes ("always follow the process") do not close the gap, because the cause is the reward structure, not the wording. A bigger model does not either: the paper shows the gap is environmentally afforded, not weight-encoded.
 
-📄 The full argument with the figures is in the **[6-page brief](docs/compliance-gap-brief.pdf)** — what the finding is, why you can't catch it by reading output, and what to do about it.
-
-## Why
+## No model in the loop
 
 ![How skillgate works: an AI agent tries to commit, skillgate runs deterministic gates outside the model, and blocks the finish line until every gate passes](assets/skillgate-flow.png)
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { findSpecPath, loadSpec } from "./spec.js";
 import { runGates } from "./core.js";
 import { checkDrift, DEFAULT_THRESHOLD } from "./drift.js";
@@ -50,6 +51,7 @@ function help(): void {
   console.log(`skillgate — deterministic finish-line gates for AI coding agents
 
 Usage:
+  skillgate audit          one-shot read-only audit of this repo (no config needed)
   skillgate check [spec]   run gates, exit 1 if any fail
   skillgate init           write an example .skillgate/done.yaml
   skillgate drift          report AI instruction-file drift, exit 1 if drifted
@@ -96,6 +98,60 @@ if (cmd === "init") {
   fs.writeFileSync(target, EXAMPLE);
   console.log(`wrote ${path.relative(cwd, target)} — edit it, then \`skillgate check\``);
   process.exit(0);
+}
+
+if (cmd === "audit") {
+  // Zero-config, read-only: see what your agent could cut in this repo right now.
+  // If there's no spec we evaluate against the built-in defaults WITHOUT writing
+  // anything to the repo — an audit must not change the thing it audits.
+  let specPath = findSpecPath(cwd);
+  let usingDefaults = false;
+  if (!specPath || !fs.existsSync(specPath)) {
+    const tmp = path.join(os.tmpdir(), `skillgate-audit-${process.pid}.yaml`);
+    fs.writeFileSync(tmp, EXAMPLE);
+    specPath = tmp;
+    usingDefaults = true;
+  }
+
+  let result;
+  try {
+    result = runGates(loadSpec(specPath), cwd);
+  } catch (e: any) {
+    console.error(c(C.red, `skillgate: ${e.message}`));
+    process.exit(2);
+  } finally {
+    if (usingDefaults) {
+      try { fs.unlinkSync(specPath); } catch { /* best effort */ }
+    }
+  }
+
+  if (json) {
+    console.log(JSON.stringify({ ...result, usingDefaults }, null, 2));
+    process.exit(result.passed ? 0 : 1);
+  }
+
+  console.log(`${c(C.bold, "skillgate audit")} ${c(C.dim, "· " + (path.basename(cwd) || cwd))}`);
+  console.log(
+    c(C.dim, usingDefaults
+      ? "  no .skillgate/done.yaml — auditing against built-in defaults"
+      : `  using ${path.relative(cwd, specPath) || specPath}`),
+  );
+  console.log("");
+  for (const r of result.results) {
+    const mark = r.ok ? c(C.green, "✓") : c(C.red, "✗");
+    console.log(`  ${mark} ${r.id}  ${c(C.dim, r.reason)}`);
+  }
+  console.log("");
+  if (result.passed) {
+    console.log(c(C.green, `✓ all ${result.results.length} checks pass — nothing for your agent to cut here.`));
+    process.exit(0);
+  }
+  console.log(
+    c(C.red, `✗ ${result.failed.length} of ${result.results.length} checks would let your agent reach "done" unfinished: `) +
+      result.failed.map((f) => f.id).join(", "),
+  );
+  console.log(c(C.dim, "→ Lock it in: `skillgate init`, then wire it into your agent — https://github.com/renezander030/skillgate#install"));
+  process.exit(1);
 }
 
 if (cmd === "check") {
