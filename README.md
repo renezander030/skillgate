@@ -8,19 +8,13 @@
 
 ![skillgate blocking a git commit because two gates fail, then letting it through once they are fixed](assets/skillgate-demo.gif)
 
-![How skillgate works: an AI agent tries to commit, skillgate runs deterministic gates outside the model, and blocks the finish line until every gate passes](assets/skillgate-flow.png)
+## Get a verdict on your repo in 30 seconds
 
-## This is a measured, structural failure, not a vibe
-
-In [*The Compliance Gap*](https://arxiv.org/html/2605.01771v1) (Shin, 2026 — 2,031 sessions, six frontier models), models verbally agree to a process instruction and then bypass it at a **0% compliance rate** under default conditions. Two results from that paper are the entire design basis for skillgate:
-
-- **You cannot catch it by reading the output.** The gap is provably undetectable from text alone, by any human or LLM observer (Theorem 2, via the Data Processing Inequality). A model grading its own compliance is structurally blind to its own deviation. The evaluator has to observe behavior deterministically, out of band. That is what skillgate is.
-- **Removing the shortcut is what works.** Taking away the affordance that lets the model cut the corner raised compliance from 0% to 75% (Cohen's *d* = 2.47), the strongest intervention measured. skillgate removes the affordance the only way that holds: it denies the finish-line command until the work is real.
-
-Prompt-level fixes ("always follow the process") do not close the gap, because the cause is the reward structure, not the wording. A bigger model does not either: the paper shows the gap is environmentally afforded, not weight-encoded.
+No install, no signup, nothing to read first. Point it at any repo and see which corners your agent has been cutting:
 
 ```bash
-npx @reneza/skillgate check
+npx @reneza/skillgate@latest init     # writes a starter .skillgate/done.yaml
+npx @reneza/skillgate@latest check    # scores your definition-of-done, right now
 ```
 
 ```
@@ -32,9 +26,22 @@ npx @reneza/skillgate check
 ✗ 2 of 4 gates unmet: changelog-touched, no-stray-todos
 ```
 
-Exit code 1, and in an agent harness the publish command never runs.
+Exit code 1 — and in an agent harness the finish-line command (commit / push / publish) never runs. Caught a corner you would have shipped? That is the whole pitch: **⭐ star the repo** and [wire it into your agent](#install) in about a minute.
+
+## This is a measured, structural failure, not a vibe
+
+In [*The Compliance Gap*](https://arxiv.org/html/2605.01771v1) (Shin, 2026 — 2,031 sessions, six frontier models), models verbally agree to a process instruction and then bypass it at a **0% compliance rate** under default conditions. Two results from that paper are the entire design basis for skillgate:
+
+- **You cannot catch it by reading the output.** The gap is provably undetectable from text alone, by any human or LLM observer (Theorem 2, via the Data Processing Inequality). A model grading its own compliance is structurally blind to its own deviation. The evaluator has to observe behavior deterministically, out of band. That is what skillgate is.
+- **Removing the shortcut is what works.** Taking away the affordance that lets the model cut the corner raised compliance from 0% to 75% (Cohen's *d* = 2.47), the strongest intervention measured. skillgate removes the affordance the only way that holds: it denies the finish-line command until the work is real.
+
+Prompt-level fixes ("always follow the process") do not close the gap, because the cause is the reward structure, not the wording. A bigger model does not either: the paper shows the gap is environmentally afforded, not weight-encoded.
+
+📄 The full argument with the figures is in the **[6-page brief](docs/compliance-gap-brief.pdf)** — what the finding is, why you can't catch it by reading output, and what to do about it.
 
 ## Why
+
+![How skillgate works: an AI agent tries to commit, skillgate runs deterministic gates outside the model, and blocks the finish line until every gate passes](assets/skillgate-flow.png)
 
 The check is a **pure function over the filesystem**: same inputs, same verdict, in milliseconds, with no model in the loop. That is the whole point. An LLM asked "is this done?" answers differently depending on the weather and has an incentive to say yes. A script does not. Because the judge is model-independent, it works the same whatever model you have plugged into your agent.
 
@@ -52,24 +59,45 @@ Use a loop to make progress. Use skillgate to define when progress is allowed to
 
 ## Install
 
+Pick the path that matches how far you want the guarantee to reach. Every one enforces the *same* `.skillgate/done.yaml`, so you define "done" once.
+
+**1. Zero install — just run it**
+
 ```bash
-npm i -D @reneza/skillgate     # for CI / pre-commit / Claude Code
-# or just use npx, no install needed:  npx @reneza/skillgate check
+npx @reneza/skillgate@latest check     # nothing to install; ideal for a first look
 ```
 
-The CLI is named `skillgate` once installed; for the zero-install path use the full `npx @reneza/skillgate`.
+**2. Add it to a project** (CI, pre-commit, Claude Code, husky)
 
-No Node on the machine? Run it in a container against the current directory:
+```bash
+npm i -D @reneza/skillgate             # the CLI is then simply `skillgate check`
+```
+
+**3. No Node on the machine?** Run it in a container against the current directory — copy, paste, done:
 
 ```bash
 docker run --rm -v "$PWD":/repo -w /repo node:20-alpine npx -y @reneza/skillgate check
 ```
 
+**4. One server-side gate your agent can't bypass (a VPS).** The only *hard* layer that's free and works on private repos: the definition of done lives on a separate box the agent can never log into, and `git push --no-verify` cannot skip a server hook. One run provisions a fresh Debian/Ubuntu/Fedora/Alpine instance (the installer detects the package manager):
+
+```bash
+git clone https://github.com/renezander030/skillgate && cd skillgate/contrib/self-hosted-gate
+ssh-keygen -t ed25519 -N "" -f ./push_key && cp ./push_key.pub ./authorized_key.pub
+sh vps/setup.sh root@your-vps.example.com      # installs the gate, then prints how to push
+```
+
+Full walkthrough — mirror-to-GitHub, deploy keys, and the Docker / VM substrates — in [`contrib/self-hosted-gate`](contrib/self-hosted-gate/).
+
+> **Render, Railway, Heroku-style PaaS?** Not applicable, and worth saying why: skillgate is a gate on `git push`, not a hosted service. A PaaS builds *after* the code already reached GitHub, so it adds no boundary the agent has to cross. For a server-side guarantee, use the VPS path above, or CI + branch protection (public repos and paid GitHub plans).
+
 ## Define your gates
 
-A gate is one deterministic, machine-checkable condition. Run `npx @reneza/skillgate init` to drop a starter `.skillgate/done.yaml`:
+A gate is one deterministic, machine-checkable condition. Run `npx @reneza/skillgate init` to drop a starter `.skillgate/done.yaml` — exactly this:
 
 ```yaml
+# skillgate — definition of done
+# Docs: https://github.com/renezander030/skillgate
 name: definition-of-done
 
 # Commands that count as crossing the finish line (substring match).
@@ -80,25 +108,25 @@ finishLine:
 
 gates:
   - id: tests-pass
+    description: Test suite passes
     type: command            # must exit 0
     run: "npm test --silent"
 
-  - id: changelog-touched
-    type: file-contains      # file must match a regex
-    file: CHANGELOG.md
-    pattern: "unreleased"
-    flags: "i"
-
   - id: no-stray-todos
-    type: absent             # regex must NOT appear
+    description: No TODO or FIXME comment left in source
+    type: absent             # regex must NOT appear in any matched file
     glob: "src/**/*.{ts,js}"
-    pattern: "TODO|FIXME"
+    pattern: '(//|#)\s*(TODO|FIXME)'
 
   - id: no-secrets
+    description: No obvious secrets committed
     type: absent
     glob: "**/*.{ts,js,json,md,yaml,yml,env}"
-    pattern: "ghp_[A-Za-z0-9]{20,}|sk_live_|-----BEGIN [A-Z ]*PRIVATE KEY-----"
+    pattern: 'ghp_[A-Za-z0-9]{36}|sk_live_[A-Za-z0-9]{16,}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----'
+    ignore: [".skillgate/**"]
 ```
+
+A `file-contains` gate (e.g. require a touched changelog) and the other types are in the table below; [`examples/`](examples/) has fuller specs.
 
 ### Gate types
 
