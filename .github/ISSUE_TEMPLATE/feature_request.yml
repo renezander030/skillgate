@@ -1,0 +1,26 @@
+name: Feature request
+description: Suggest a new gate type or capability
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What corner can your agent still cut?
+      description: Describe the definition-of-done step skillgate cannot enforce today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed gate / behaviour
+      description: How would you express it in done.yaml? Sketch the YAML if you can.
+      render: yaml
+    validations:
+      required: true
+  - type: checkboxes
+    id: deterministic
+    attributes:
+      label: Determinism check
+      options:
+        - label: This can be decided as a pure function over the filesystem (no model, no network)
+          required: true

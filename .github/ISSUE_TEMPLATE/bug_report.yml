@@ -1,0 +1,51 @@
+name: Bug report
+description: Something in skillgate behaves incorrectly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. skillgate is deterministic, so a minimal repro almost always pins it down.
+  - type: input
+    id: version
+    attributes:
+      label: skillgate version
+      description: Output of `skillgate --version`
+      placeholder: "0.3.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: how
+    attributes:
+      label: How are you running it?
+      options:
+        - npx
+        - npm (installed dependency)
+        - CI (GitHub Actions)
+        - pre-commit
+        - Claude Code / opencode hook
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: spec
+    attributes:
+      label: Your .skillgate/done.yaml
+      description: The smallest spec that reproduces the issue.
+      render: yaml
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected vs what happened
+      description: Include the command you ran, the verdict/exit code, and the output.
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Node version and OS
+      placeholder: "node 20.x, Ubuntu 24.04"
+    validations:
+      required: true

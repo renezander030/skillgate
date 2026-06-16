@@ -4,6 +4,13 @@
 
 # skillgate
 
+<p align="center">
+  <a href="https://github.com/renezander030/skillgate/actions/workflows/ci.yml"><img src="https://github.com/renezander030/skillgate/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://www.npmjs.com/package/@reneza/skillgate"><img src="https://img.shields.io/npm/v/@reneza/skillgate.svg" alt="npm version"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/npm/l/@reneza/skillgate.svg" alt="license"></a>
+  <img src="https://img.shields.io/node/v/@reneza/skillgate.svg" alt="node version">
+</p>
+
 > **A finish-line gate your agent cannot talk its way past.** AI coding agents deviate from your process to reach "done" faster, and asking the model to check its own compliance is the deviating party grading its own paper. `skillgate` is a deterministic evaluator that lives outside the model: it blocks the commit / push / publish until your definition-of-done actually passes. Works with **opencode** (any model you plug in), Claude Code, pre-commit, and CI.
 
 ![skillgate blocking a git commit because two gates fail, then letting it through once they are fixed](assets/skillgate-demo.gif)
@@ -219,6 +226,15 @@ Two differences that matter beyond "git hook vs git plumbing":
 | [self-hosted `pre-receive`](contrib/self-hosted-gate/) | **Hard** — server-side on a box the agent can't log into; free, and works on private repos with no paid tier |
 
 Use the harness hooks for fast feedback in the loop; rely on CI for the guarantee.
+
+## Documentation
+
+- [Quickstart](docs/quickstart.md) — audit, define, check, wire in.
+- [Spec reference](docs/spec-reference.md) — every gate type and option, plus the [JSON Schema](schema/done.schema.json) for editor autocomplete.
+- [Recipes](docs/recipes.md) — Claude Code, pre-commit, CI, loop+gate, self-hosted server.
+- [Architecture](docs/architecture.md) — how the modules fit and how to add a gate type.
+- [Compatibility & deprecation policy](docs/compatibility.md) — SemVer, spec versioning, the exit-code contract.
+- [Contributing](CONTRIBUTING.md) · [Security policy](SECURITY.md) · [Code of conduct](CODE_OF_CONDUCT.md)
 
 ## Related
 
