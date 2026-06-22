@@ -108,6 +108,7 @@ test("check: every gate type round-trips through the CLI", () => {
     "README.md": "# hi\n",
     "src/a.ts": "export const a = 1\n",
     "notes.md": "evidence",
+    "docs/api/guide.md": "guide",
     ".skillgate/done.yaml": [
       "gates:",
       "  - id: exists",
@@ -127,6 +128,9 @@ test("check: every gate type round-trips through the CLI", () => {
       "  - id: evidence",
       "    type: evidence",
       "    file: notes.md",
+      "  - id: not-empty",
+      "    type: not-empty",
+      "    path: docs/api",
       "  - id: sync",
       "    type: instruction-sync",
       "",
@@ -136,7 +140,25 @@ test("check: every gate type round-trips through the CLI", () => {
   assert.equal(r.status, 0);
   const out = JSON.parse(r.stdout);
   assert.equal(out.passed, true);
-  assert.equal(out.results.length, 6);
+  assert.equal(out.results.length, 7);
+  assert.ok(out.results.find((x: any) => x.id === "not-empty" && x.type === "not-empty" && x.ok));
+});
+
+test("check: exits 1 when a not-empty gate fails on empty directory", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "skillgate-e2e-"));
+  fs.mkdirSync(path.join(dir, "docs", "api", "empty"), { recursive: true });
+  fs.mkdirSync(path.join(dir, ".skillgate"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, ".skillgate", "done.yaml"),
+    "gates:\n  - id: not-empty-docs\n    type: not-empty\n    path: docs/api/empty\n",
+  );
+  try {
+    const r = sg(["check"], dir);
+    assert.equal(r.status, 1);
+    assert.match(r.stdout, /not-empty-docs/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("check --json: failing run is machine-readable and exits 1", () => {

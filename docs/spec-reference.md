@@ -64,7 +64,10 @@ test/lint/build commands, not anything that hits the network.
 - id: tests-pass
   type: command
   run: "npm test --silent"
+  timeout: 60000               # optional, default 30000 (30s)
 ```
+
+On timeout the gate returns a deterministic `command timed out after Nms` reason.
 
 ### `evidence`
 
@@ -76,6 +79,19 @@ non-empty.
 - id: research-recorded
   type: evidence
   file: .skillgate/evidence/research.md
+```
+
+### `not-empty`
+
+A directory must contain at least `min` entries (files or subdirectories). Catches
+agents that claim a step is done but leave an empty `evidence/`, `docs/` or `dist/`
+directory.
+
+```yaml
+- id: evidence-not-empty
+  type: not-empty
+  path: docs/api
+  min: 3                    # optional, default 1
 ```
 
 ### `instruction-sync`

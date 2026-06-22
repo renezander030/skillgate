@@ -36,6 +36,8 @@ export interface AbsentGate extends BaseGate {
 export interface CommandGate extends BaseGate {
   type: "command";
   run: string;
+  /** Timeout in milliseconds. Default 30000 (30s). */
+  timeout?: number;
 }
 
 /**
@@ -60,13 +62,22 @@ export interface InstructionSyncGate extends BaseGate {
   threshold?: number;
 }
 
+/** A directory must contain at least `min` entries. Default 1. */
+export interface NotEmptyGate extends BaseGate {
+  type: "not-empty";
+  path: string;
+  /** Minimum number of entries. Default 1. */
+  min?: number;
+}
+
 export type Gate =
   | FileExistsGate
   | FileContainsGate
   | AbsentGate
   | CommandGate
   | EvidenceGate
-  | InstructionSyncGate;
+  | InstructionSyncGate
+  | NotEmptyGate;
 
 export interface Spec {
   /**
@@ -84,6 +95,12 @@ export interface Spec {
 
 /** The spec format version this build understands. See docs/compatibility.md. */
 export const SPEC_VERSION = 1;
+
+/** Default minimum entries for `not-empty` gate. */
+export const DEFAULT_NOT_EMPTY_MIN = 1;
+
+/** Default timeout for command gates (30 seconds). */
+export const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 
 export const DEFAULT_SPEC_PATHS = [
   ".skillgate/done.yaml",

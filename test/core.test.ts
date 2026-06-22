@@ -62,10 +62,57 @@ test("command: pass on exit 0, fail on nonzero", () => {
   assert.equal(runGates({ gates: [{ id: "bad", type: "command", run: "false" }] }, dir).passed, false);
 });
 
+test("command: timeout kills a hanging command", () => {
+  const dir = tmpProject({});
+  const r = runGates({ gates: [{ id: "hang", type: "command", run: 'node -e "setTimeout(()=>{},10000)"', timeout: 100 }] }, dir);
+  assert.equal(r.passed, false);
+  const gate = r.results.find((x) => x.id === "hang")!;
+  assert.equal(gate.ok, false);
+  assert.equal(gate.reason, "command timed out after 100ms");
+});
+
 test("evidence: requires a non-empty file", () => {
   const dir = tmpProject({ "notes.md": "found it" });
   assert.equal(runGates({ gates: [{ id: "e", type: "evidence", file: "notes.md" }] }, dir).passed, true);
   assert.equal(runGates({ gates: [{ id: "e", type: "evidence", file: "missing.md" }] }, dir).passed, false);
+});
+
+test("not-empty: passes when directory has entries", () => {
+  const dir = tmpProject({ "docs/api/readme.md": "hello", "docs/api/guide.md": "world" });
+  const r = runGates({ gates: [{ id: "ne", type: "not-empty", path: "docs/api" }] }, dir);
+  assert.equal(r.passed, true);
+  assert.equal(r.results[0].ok, true);
+});
+
+test("not-empty: fails on empty directory", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "skillgate-"));
+  try {
+    const r = runGates({ gates: [{ id: "ne", type: "not-empty", path: "." }] }, dir);
+    assert.equal(r.passed, false);
+    assert.equal(r.results[0].ok, false);
+    assert.match(r.results[0].reason, /expected at least 1/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("not-empty: fails on missing directory", () => {
+  const dir = tmpProject({});
+  const r = runGates({ gates: [{ id: "ne", type: "not-empty", path: "nosuchdir" }] }, dir);
+  assert.equal(r.passed, false);
+  assert.equal(r.results[0].ok, false);
+  assert.match(r.results[0].reason, /directory not found/);
+});
+
+test("not-empty: respects min option", () => {
+  const dir = tmpProject({ "stuff/a.txt": "a", "stuff/b.txt": "b" });
+  // min: 3 → fail
+  const r1 = runGates({ gates: [{ id: "ne", type: "not-empty", path: "stuff", min: 3 }] }, dir);
+  assert.equal(r1.passed, false);
+  assert.match(r1.results[0].reason, /expected at least 3/);
+  // min: 2 → pass
+  const r2 = runGates({ gates: [{ id: "ne", type: "not-empty", path: "stuff", min: 2 }] }, dir);
+  assert.equal(r2.passed, true);
 });
 
 test("isFinishLine: substring match against patterns", () => {

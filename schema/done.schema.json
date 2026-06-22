@@ -93,7 +93,8 @@
             "id": { "type": "string" },
             "description": { "type": "string" },
             "type": { "const": "command" },
-            "run": { "type": "string", "description": "Shell command; must exit 0." }
+            "run": { "type": "string", "description": "Shell command; must exit 0." },
+            "timeout": { "type": "integer", "minimum": 1, "description": "Timeout in milliseconds. Default 30000." }
           }
         },
         {
@@ -120,6 +121,22 @@
               "minimum": 0,
               "maximum": 1,
               "description": "Similarity required to count as in sync (default 0.95)."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "path"],
+          "properties": {
+            "id": { "type": "string" },
+            "description": { "type": "string" },
+            "type": { "const": "not-empty" },
+            "path": { "type": "string", "description": "Directory path that must contain at least `min` entries." },
+            "min": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Minimum number of entries. Default 1."
             }
           }
         }

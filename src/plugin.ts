@@ -30,7 +30,8 @@ export const SkillGate = async (ctx: any): Promise<Hooks> => {
       let spec;
       try {
         spec = loadSpec(specPath);
-      } catch {
+      } catch (e: any) {
+        process.stderr.write(`skillgate: warning — could not load spec at ${specPath}: ${e.message}\n`);
         return; // never block on a broken spec
       }
       if (!isFinishLine(command, spec.finishLine)) return;

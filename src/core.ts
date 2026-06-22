@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
 import { globSync } from "tinyglobby";
-import type { Spec, Gate } from "./spec.js";
+import { type Spec, type Gate, DEFAULT_COMMAND_TIMEOUT_MS, DEFAULT_NOT_EMPTY_MIN } from "./spec.js";
 import { checkDrift, DEFAULT_THRESHOLD } from "./drift.js";
 
 export interface GateResult {
@@ -59,10 +59,14 @@ function checkGate(gate: Gate, cwd: string): GateResult {
         return { ...base, ok: true, reason: `no /${gate.pattern}/ in ${gate.glob}` };
       }
       case "command": {
+        const timeout = gate.timeout ?? DEFAULT_COMMAND_TIMEOUT_MS;
         try {
-          execSync(gate.run, { cwd, stdio: "pipe", encoding: "utf8" });
+          execSync(gate.run, { cwd, stdio: "pipe", encoding: "utf8", timeout });
           return { ...base, ok: true, reason: `\`${gate.run}\` exited 0` };
         } catch (e: any) {
+          if (e.killed || e.code === "ETIMEDOUT") {
+            return { ...base, ok: false, reason: `command timed out after ${timeout}ms` };
+          }
           const tail = String(e.stderr || e.stdout || e.message || "")
             .trim()
             .split("\n")
@@ -92,6 +96,14 @@ function checkGate(gate: Gate, cwd: string): GateResult {
           ok: false,
           reason: `${res.drifted} of ${res.entries.length} instruction files drifted from ${res.canonical}: ${names.join(", ")} (run \`skillgate sync\`)`,
         };
+      }
+      case "not-empty": {
+        const full = path.resolve(cwd, gate.path);
+        if (!fs.existsSync(full)) return { ...base, ok: false, reason: `directory not found: ${gate.path}` };
+        const entries = fs.readdirSync(full);
+        const min = gate.min ?? DEFAULT_NOT_EMPTY_MIN;
+        if (entries.length < min) return { ...base, ok: false, reason: `directory has ${entries.length} entries, expected at least ${min}` };
+        return { ...base, ok: true, reason: `directory has ${entries.length} entries` };
       }
       default:
         return { ...base, ok: false, reason: `unknown gate type` };
