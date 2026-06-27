@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 - 2026-06-27
 
 ### Added
 - `skillgate scaffold` — generates `.skillgate/evidence/` directory with stack-specific
