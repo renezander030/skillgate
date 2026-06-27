@@ -195,6 +195,89 @@ export function similarity(a: string[], b: string[]): number {
   return (2 * lcsLen(a, b)) / (a.length + b.length);
 }
 
+export interface DiffSegment {
+  kind: "equal" | "insert" | "delete";
+  lines: string[];
+}
+
+/**
+ * Compute a line-level diff between two arrays of lines.
+ * Returns a simple diff (like a unified diff) as segments.
+ */
+export function lineDiff(a: string[], b: string[]): DiffSegment[] {
+  // Wagner-Fischer to build the edit graph, then backtrack for diff
+  const m = a.length;
+  const n = b.length;
+  const d: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) d[i][0] = i;
+  for (let j = 0; j <= n; j++) d[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+    }
+  }
+
+  // Backtrack
+  const segments: DiffSegment[] = [];
+  let i = m, j = n;
+  const reverseSegs: { kind: "equal" | "insert" | "delete"; lines: string[] }[] = [];
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) {
+      reverseSegs.push({ kind: "equal", lines: [a[i - 1]] });
+      i--; j--;
+    } else if (j > 0 && (i === 0 || d[i][j - 1] <= d[i - 1][j])) {
+      reverseSegs.push({ kind: "insert", lines: [b[j - 1]] });
+      j--;
+    } else if (i > 0) {
+      reverseSegs.push({ kind: "delete", lines: [a[i - 1]] });
+      i--;
+    } else {
+      break;
+    }
+  }
+  reverseSegs.reverse();
+
+  // Merge consecutive segments of the same kind
+  for (const seg of reverseSegs) {
+    const last = segments[segments.length - 1];
+    if (last && last.kind === seg.kind) {
+      last.lines.push(...seg.lines);
+    } else {
+      segments.push(seg);
+    }
+  }
+  return segments;
+}
+
+/**
+ * Pretty-print a line diff between two sources.
+ * Returns formatted string with +/- markers, similar to unified diff.
+ */
+export function formatDiff(a: string[], b: string[]): string {
+  const segments = lineDiff(a, b);
+  const out: string[] = [];
+  // Limit context: only changed regions + 2 lines of context
+  const CONTEXT = 2;
+  for (let idx = 0; idx < segments.length; idx++) {
+    const seg = segments[idx];
+    if (seg.kind === "equal") {
+      if (seg.lines.length > CONTEXT * 2) {
+        out.push(`  ${seg.lines[0]}`);
+        out.push(`  ... ${seg.lines.length - CONTEXT * 2} more lines ...`);
+        out.push(`  ${seg.lines[seg.lines.length - 1]}`);
+      } else {
+        for (const l of seg.lines) out.push(`  ${l}`);
+      }
+    } else if (seg.kind === "delete") {
+      for (const l of seg.lines) out.push(`- ${l}`);
+    } else if (seg.kind === "insert") {
+      for (const l of seg.lines) out.push(`+ ${l}`);
+    }
+  }
+  return out.join("\n");
+}
+
 export const DEFAULT_THRESHOLD = 0.95;
 
 /** Discover instruction files under root, pick canonical, score every other tool. */

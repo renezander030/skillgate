@@ -98,13 +98,52 @@ directory.
 
 Every AI instruction file in the repo (CLAUDE.md, AGENTS.md, `.cursor/rules`,
 copilot-instructions.md, …) must still agree with the canonical one. Drift means your
-agents are reading different rulebooks. Run `skillgate sync` to fix.
+agents are reading different rulebooks. Run `skillgate sync` to fix, or
+`skillgate diff-instructions` to see exactly what changed.
 
 ```yaml
 - id: instructions-in-sync
   type: instruction-sync
   threshold: 0.95              # optional, 0..1, default 0.95
 ```
+
+### `skillgate init` now defaults
+
+Starting with v0.5.0, `skillgate init` generates a template that includes the
+`instruction-sync` gate and a commented-out `evidence` gate example. Every new
+project starts with drift detection enabled and an evidence workflow ready to
+activate — no opt-in required.
+
+## Scaffold templates (`skillgate scaffold`)
+
+The `skillgate scaffold` command generates `.skillgate/evidence/` with expected
+files for the agent to write before crossing the finish line. It also creates a
+README explaining the evidence workflow.
+
+```bash
+skillgate scaffold                          # generic evidence files
+skillgate scaffold --template react         # React / Next.js stack
+skillgate scaffold --template ts-lib        # TypeScript library
+skillgate scaffold --template python        # Python application
+skillgate scaffold --update-agents          # also update AGENTS.md/CLAUDE.md
+```
+
+Each template generates:
+- `test-output.txt` — save test runner output here
+- `lint-report.txt` — save linter output here
+- `diff-review.md` — self-review of changes
+- `README.md` — explains the evidence workflow to the agent
+
+Stack-specific templates add files like `typecheck-output.txt` (ts-lib, react, python)
+or `coverage-summary.txt` (ts-lib).
+
+### `--update-agents`
+
+When passed, `skillgate scaffold` also appends (or creates) workflow instructions in
+AGENTS.md (or CLAUDE.md if AGENTS.md is absent) that tell the agent to:
+1. Run checks and save output to the evidence files
+2. Write a self-review of changes
+3. Run `npx skillgate check` before crossing the finish line
 
 ## Determinism contract
 

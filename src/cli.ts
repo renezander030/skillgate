@@ -4,8 +4,9 @@ import path from "node:path";
 import os from "node:os";
 import { findSpecPath, loadSpec } from "./spec.js";
 import { runGates } from "./core.js";
-import { checkDrift, DEFAULT_THRESHOLD } from "./drift.js";
+import { checkDrift, formatDiff, DEFAULT_THRESHOLD, discover, pickCanonical } from "./drift.js";
 import { runSync } from "./link.js";
+import { runScaffold, listTemplates } from "./scaffold.js";
 
 const C = {
   reset: "\x1b[0m",
@@ -29,6 +30,12 @@ finishLine:
   - "npm publish"
 
 gates:
+  # Every agent instruction file must stay in sync with the canonical one.
+  # Run \`skillgate sync\` to sync; \`skillgate diff-instructions\` to see drift.
+  - id: instruction-sync
+    description: AI agent instruction files are in sync
+    type: instruction-sync
+
   - id: tests-pass
     description: Test suite passes
     type: command
@@ -46,17 +53,27 @@ gates:
     glob: "**/*.{ts,js,json,md,yaml,yml,env}"
     pattern: 'ghp_[A-Za-z0-9]{36}|sk_live_[A-Za-z0-9]{16,}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----'
     ignore: [".skillgate/**"]
+
+  # Evidence gate: the agent must write an evidence file before crossing the
+  # finish line. Run \`skillgate scaffold\` to generate evidence templates.
+  # - id: tests-ran
+  #   description: Agent saved test output before committing
+  #   type: evidence
+  #   file: .skillgate/evidence/test-output.txt
 `;
 
 function help(): void {
   console.log(`skillgate — deterministic finish-line gates for AI coding agents
 
 Usage:
-  skillgate audit          one-shot read-only audit of this repo (no config needed)
-  skillgate check [spec]   run gates, exit 1 if any fail
-  skillgate init           write an example .skillgate/done.yaml
-  skillgate drift          report AI instruction-file drift, exit 1 if drifted
-  skillgate sync           make AGENTS.md canonical and link the rest
+  skillgate audit                    one-shot read-only audit of this repo (no config needed)
+  skillgate check [spec]             run gates, exit 1 if any fail
+  skillgate init                     write an example .skillgate/done.yaml
+  skillgate scaffold [--template]    generate .skillgate/evidence/ with stack templates
+  skillgate drift                    report AI instruction-file drift, exit 1 if drifted
+  skillgate diff-instructions        show line-level diff between drifted instruction files
+  skillgate canonical <file>         set which file is the canonical instruction source
+  skillgate sync                     make AGENTS.md canonical and link the rest
   skillgate --version
 
 Flags:
@@ -64,7 +81,14 @@ Flags:
   --cwd <dir>              run against another directory
   --threshold <0..1>       drift: similarity required to count as in sync (default 0.95)
   --dry-run                sync: show what would change without writing
-  --symlink                sync: use symlinks instead of pointer files and copies`);
+  --symlink                sync: use symlinks instead of pointer files and copies
+  --update-agents          scaffold: update AGENTS.md/CLAUDE.md with evidence workflow
+
+Templates (scaffold --template):
+  generic    General-purpose evidence workflow
+  ts-lib     TypeScript library — typecheck, test, lint, coverage
+  react      React / Next.js application
+  python     Python application`);
 }
 
 function version(): void {
@@ -87,6 +111,8 @@ if (!cmd || cmd === "help" || cmd === "--help" || cmd === "-h") {
 const json = args.includes("--json");
 const cwdIdx = args.indexOf("--cwd");
 const cwd = cwdIdx >= 0 ? path.resolve(args[cwdIdx + 1]) : process.cwd();
+
+const updateAgents = args.includes("--update-agents");
 
 if (cmd === "init") {
   const dir = path.join(cwd, ".skillgate");
@@ -227,6 +253,72 @@ if (cmd === "sync") {
     symlink: args.includes("--symlink"),
   });
   for (const l of lines) console.log(l);
+  process.exit(0);
+}
+
+if (cmd === "scaffold") {
+  const tIdx = args.indexOf("--template");
+  const template = tIdx >= 0 ? args[tIdx + 1] : "generic";
+  try {
+    const { lines } = runScaffold({ cwd, template, updateAgents });
+    for (const l of lines) console.log(l);
+    process.exit(0);
+  } catch (e: any) {
+    console.error(c(C.red, `skillgate: ${e.message}`));
+    process.exit(2);
+  }
+}
+
+if (cmd === "diff-instructions") {
+  const tIdx = args.indexOf("--threshold");
+  const threshold = tIdx >= 0 ? Number(args[tIdx + 1]) : DEFAULT_THRESHOLD;
+  const res = checkDrift(cwd, threshold);
+
+  if (res.entries.length === 0) {
+    console.log("no agent instruction files found");
+    process.exit(0);
+  }
+
+  if (res.drifted === 0) {
+    console.log(c(C.green, `✓ all ${res.entries.length} instruction files in sync with ${res.canonical}`));
+    process.exit(0);
+  }
+
+  const sources = discover(cwd);
+  const canon = pickCanonical(sources);
+  const canonLabel = canon.files.join(", ");
+
+  for (const e of res.entries) {
+    if (e.status !== "drifted") continue;
+    const src = sources.find((s) => s.tool === e.tool);
+    if (!src) continue;
+    const pct = `${Math.round(e.similarity * 100)}%`;
+    console.log(`\n${c(C.bold, e.tool)} — ${pct} similarity with ${c(C.bold, canonLabel)}`);
+    console.log(c(C.dim, e.files.join(", ")));
+    console.log(c(C.dim, "─".repeat(50)));
+    console.log(formatDiff(canon.lines, src.lines));
+  }
+  process.exit(1);
+}
+
+if (cmd === "canonical") {
+  const fileArg = args[1];
+  if (!fileArg || fileArg.startsWith("-")) {
+    console.error(c(C.red, "usage: skillgate canonical <file>"));
+    process.exit(2);
+  }
+  const canonPath = path.resolve(cwd, fileArg);
+  if (!fs.existsSync(canonPath)) {
+    console.error(c(C.red, `file not found: ${fileArg}`));
+    process.exit(2);
+  }
+  // Write a .skillgate/canonical marker file pointing to the canonical source
+  const markerDir = path.join(cwd, ".skillgate");
+  fs.mkdirSync(markerDir, { recursive: true });
+  const markerPath = path.join(markerDir, "canonical-instructions.txt");
+  const relPath = path.relative(cwd, canonPath);
+  fs.writeFileSync(markerPath, relPath + "\n");
+  console.log(c(C.green, `✓ canonical instruction source set to ${relPath}`));
   process.exit(0);
 }
 

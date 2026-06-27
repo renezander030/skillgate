@@ -14,11 +14,12 @@ README for the research basis (the Compliance Gap).
 
 | File | Responsibility |
 |------|----------------|
-| `cli.ts` | Argument parsing and the `audit` / `check` / `init` / `drift` / `sync` commands. Owns all process output and exit codes; it is the only module that talks to the terminal. |
+| `cli.ts` | Argument parsing and the `audit` / `check` / `init` / `scaffold` / `drift` / `diff-instructions` / `canonical` / `sync` commands. Owns all process output and exit codes; it is the only module that talks to the terminal. |
 | `spec.ts` | The spec types, `findSpecPath()` (where a `done.yaml` may live), and `loadSpec()` (parse + validate, including the optional `version` field). |
 | `core.ts` | `runGates()` — the deterministic evaluator. One `case` per gate type in `checkGate()`. `isFinishLine()` decides whether a command crosses the line. **This is the pure heart; it never reads argv or writes output.** |
-| `drift.ts` | Instruction-file drift detection (similarity of CLAUDE.md / AGENTS.md / Cursor / Copilot / …). Powers the `instruction-sync` gate and the `drift` command. |
+| `drift.ts` | Instruction-file drift detection (similarity of CLAUDE.md / AGENTS.md / Cursor / Copilot / …). Powers the `instruction-sync` gate and the `drift` / `diff-instructions` commands. Also exports `lineDiff()` and `formatDiff()` for showing line-level changes between instruction files. |
 | `link.ts` | `runSync()` — makes one instruction file canonical and links the rest. Powers `sync`. |
+| `scaffold.ts` | `runScaffold()` — generates `.skillgate/evidence/` directory with stack-specific evidence file templates and optionally updates agent instruction files. Powers `scaffold`. |
 | `plugin.ts` | The opencode plugin entry point that denies finish-line commands until gates pass. |
 
 ## Data flow

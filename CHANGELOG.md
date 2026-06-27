@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Added
+- `skillgate scaffold` — generates `.skillgate/evidence/` directory with stack-specific
+  evidence file templates (`generic`, `react`, `ts-lib`, `python`). The agent must write
+  these files (test output, lint report, self-review) before crossing the finish line.
+  `--template` selects the stack; `--update-agents` appends workflow instructions to
+  AGENTS.md / CLAUDE.md.
+- `skillgate diff-instructions` — shows line-level diff between drifted instruction
+  files (CLAUDE.md, AGENTS.md, …) rather than just a similarity percentage. Makes drift
+  actionable, not just visible.
+- `skillgate canonical <file>` — sets which instruction file is the single source of
+  truth by writing `.skillgate/canonical-instructions.txt`.
+- `skillgate init` now includes the `instruction-sync` gate and a commented-out
+  `evidence` gate example by default — drift detection and evidence workflow are ready
+  from the first `init`.
+- `lineDiff()` and `formatDiff()` in `drift.ts` — reusable diff utilities for showing
+  line-level changes between instruction files.
+
+### Changed
+- `init` template modernized: `instruction-sync` is an active gate; `evidence` appears
+  as a commented-out example ready to uncomment.
+
 ## 0.4.0 - 2026-06-16
 
 ### Added

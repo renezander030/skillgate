@@ -90,7 +90,16 @@ Full walkthrough — mirror-to-GitHub, deploy keys, and the Docker / VM substrat
 
 ## Define your gates
 
-A gate is one deterministic, machine-checkable condition. Run `npx @reneza/skillgate init` to drop a starter `.skillgate/done.yaml` — exactly this:
+A gate is one deterministic, machine-checkable condition. Run `npx @reneza/skillgate init` to drop a starter `.skillgate/done.yaml` that includes drift detection and an evidence-gate example right out of the box, then run `skillgate scaffold` to generate the evidence file templates the agent must fill in:
+
+```bash
+npx @reneza/skillgate init                               # create .skillgate/done.yaml
+npx @reneza/skillgate scaffold                           # create .skillgate/evidence/
+npx @reneza/skillgate scaffold --template react          # stack-specific evidence files
+npx @reneza/skillgate scaffold --update-agents           # also update AGENTS.md/CLAUDE.md
+```
+
+The starter `done.yaml`:
 
 ```yaml
 # skillgate — definition of done
@@ -104,6 +113,10 @@ finishLine:
   - "npm publish"
 
 gates:
+  - id: instruction-sync
+    description: AI agent instruction files are in sync
+    type: instruction-sync
+
   - id: tests-pass
     description: Test suite passes
     type: command            # must exit 0
@@ -134,20 +147,31 @@ A `file-contains` gate (e.g. require a touched changelog) and the other types ar
 | `absent` | `pattern` appears in **no** file matched by `glob` (reports `file:line`) |
 | `command` | `run` exits 0 — only as deterministic as the command |
 | `evidence` | a named `file` exists and is non-empty |
+| `not-empty` | a directory at `path` contains at least `min` entries (default 1) |
 | `instruction-sync` | every AI agent instruction file (CLAUDE.md, AGENTS.md, Cursor, Copilot…) still agrees with the canonical one (optional `threshold`, default 0.95) |
 
 **The `evidence` escape hatch.** Gates only see machine-observable output. For a step like "research the API first," have the agent write `.skillgate/evidence/research.md` as it works and gate on that file. Otherwise the step is invisible and the deviation hides.
 
-## Keep your agents reading the same rulebook
-
-Every AI coding tool reads a different instruction file — `CLAUDE.md`, `AGENTS.md`, `.cursor/rules`, `.github/copilot-instructions.md`, `GEMINI.md`, `.clinerules`, `.windsurf/rules`, `.junie/guidelines.md` — and nothing keeps them in sync, so they quietly drift apart until each agent follows a different process. The `instruction-sync` gate fails the finish line when that happens. Two standalone commands back it:
+**Scaffold the evidence workflow.** Run `skillgate scaffold` to generate the evidence files for your stack — test-output.txt, lint-report.txt, diff-review.md, and a README explaining the workflow to the agent. Add `--update-agents` to write agent instructions directly into AGENTS.md / CLAUDE.md. Stack templates: `generic`, `ts-lib`, `react`, `python`.
 
 ```bash
-npx @reneza/skillgate drift          # report drift, exit 1 if any file diverged
-npx @reneza/skillgate drift --json   # machine-readable, for scripts and agents
-npx @reneza/skillgate sync           # make AGENTS.md canonical, link the rest
-npx @reneza/skillgate sync --dry-run # preview without writing
-npx @reneza/skillgate sync --symlink # use symlinks instead of pointer files/copies
+skillgate scaffold                    # create evidence files for current stack
+skillgate scaffold --template react   # React-specific evidence files
+skillgate scaffold --update-agents    # also update AGENTS.md/CLAUDE.md
+```
+
+## Keep your agents reading the same rulebook
+
+Every AI coding tool reads a different instruction file — `CLAUDE.md`, `AGENTS.md`, `.cursor/rules`, `.github/copilot-instructions.md`, `GEMINI.md`, `.clinerules`, `.windsurf/rules`, `.junie/guidelines.md` — and nothing keeps them in sync, so they quietly drift apart until each agent follows a different process. The `instruction-sync` gate fails the finish line when that happens. Four commands back it:
+
+```bash
+npx @reneza/skillgate drift                 # report drift, exit 1 if any file diverged
+npx @reneza/skillgate drift --json          # machine-readable, for scripts and agents
+npx @reneza/skillgate diff-instructions     # show line-level diff of what actually changed
+npx @reneza/skillgate canonical <file>      # pin which file is the single source of truth
+npx @reneza/skillgate sync                  # make AGENTS.md canonical, link the rest
+npx @reneza/skillgate sync --dry-run        # preview without writing
+npx @reneza/skillgate sync --symlink        # use symlinks instead of pointer files/copies
 ```
 
 ```

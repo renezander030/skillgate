@@ -204,3 +204,104 @@ test("--cwd: runs against another directory", () => {
   assert.equal(typeof r.status, "number");
   assert.match(r.stdout + r.stderr, /skillgate/i);
 });
+
+test("scaffold: creates evidence directory", () => {
+  const dir = tmpProject({});
+  const r = sg(["scaffold"], dir);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /test-output\.txt/);
+  assert.ok(fs.existsSync(path.join(dir, ".skillgate", "evidence", "test-output.txt")));
+});
+
+test("scaffold: --template react creates react evidence", () => {
+  const dir = tmpProject({});
+  const r = sg(["scaffold", "--template", "react"], dir);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /typecheck-output\.txt/);
+  assert.ok(fs.existsSync(path.join(dir, ".skillgate", "evidence", "typecheck-output.txt")));
+});
+
+test("scaffold: unknown template exits 2", () => {
+  const dir = tmpProject({});
+  const r = sg(["scaffold", "--template", "frobnitz"], dir);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /unknown template/);
+});
+
+test("scaffold: --update-agents creates AGENTS.md", () => {
+  const dir = tmpProject({});
+  const r = sg(["scaffold", "--template", "generic", "--update-agents"], dir);
+  assert.equal(r.status, 0);
+  assert.ok(fs.existsSync(path.join(dir, "AGENTS.md")));
+  assert.match(fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8"), /skillgate evidence workflow/);
+});
+
+test("scaffold: --update-agents appends to existing AGENTS.md", () => {
+  const dir = tmpProject({ "AGENTS.md": "# Existing\n" });
+  const r = sg(["scaffold", "--template", "generic", "--update-agents"], dir);
+  assert.equal(r.status, 0);
+  const content = fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8");
+  assert.ok(content.includes("# Existing"));
+  assert.ok(content.includes("skillgate evidence workflow"));
+});
+
+test("diff-instructions: reports when no instruction files", () => {
+  const dir = tmpProject({ "README.md": "hi" });
+  const r = sg(["diff-instructions"], dir);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /no agent instruction files/);
+});
+
+test("diff-instructions: clean when files agree", () => {
+  const dir = tmpProject({ "AGENTS.md": "# rules\nbe good\n", "CLAUDE.md": "@AGENTS.md\n" });
+  const r = sg(["diff-instructions"], dir);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /in sync/);
+});
+
+test("diff-instructions: shows diff on drift", () => {
+  const dir = tmpProject({ "AGENTS.md": "# rules\nbe good\n", "CLAUDE.md": "# claude rules\ndo something else\n" });
+  const r = sg(["diff-instructions"], dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /Claude Code/);
+  assert.match(r.stdout, /do something else/);
+});
+
+test("canonical: sets canonical marker file", () => {
+  const dir = tmpProject({ "AGENTS.md": "# rules\nbe good\n" });
+  const r = sg(["canonical", "AGENTS.md"], dir);
+  assert.equal(r.status, 0);
+  assert.ok(fs.existsSync(path.join(dir, ".skillgate", "canonical-instructions.txt")));
+  const marker = fs.readFileSync(path.join(dir, ".skillgate", "canonical-instructions.txt"), "utf8").trim();
+  assert.equal(marker, "AGENTS.md");
+});
+
+test("canonical: errors on missing file", () => {
+  const dir = tmpProject({});
+  const r = sg(["canonical", "NONEXISTENT.md"], dir);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /file not found/);
+});
+
+test("canonical: errors without argument", () => {
+  const dir = tmpProject({});
+  const r = sg(["canonical"], dir);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /usage/);
+});
+
+test("init includes instruction-sync gate by default", () => {
+  const dir = tmpProject({});
+  const r = sg(["init"], dir);
+  assert.equal(r.status, 0);
+  const spec = fs.readFileSync(path.join(dir, ".skillgate", "done.yaml"), "utf8");
+  assert.ok(spec.includes("instruction-sync"), "init template must include instruction-sync gate");
+});
+
+test("init includes evidence gate example", () => {
+  const dir = tmpProject({});
+  const r = sg(["init"], dir);
+  assert.equal(r.status, 0);
+  const spec = fs.readFileSync(path.join(dir, ".skillgate", "done.yaml"), "utf8");
+  assert.ok(spec.includes("evidence"), "init template must include evidence gate example");
+});
