@@ -4,6 +4,7 @@ import { execSync } from "node:child_process";
 import { globSync } from "tinyglobby";
 import { type Spec, type Gate, DEFAULT_COMMAND_TIMEOUT_MS, DEFAULT_NOT_EMPTY_MIN } from "./spec.js";
 import { checkDrift, DEFAULT_THRESHOLD } from "./drift.js";
+import { readFileAtRef, listFilesAtRef, matchesGlob } from "./git.js";
 
 export interface GateResult {
   id: string;
@@ -18,9 +19,27 @@ export interface RunResult {
   failed: GateResult[];
 }
 
+/** Evaluation context. `baseRef` is the git ref diff-aware gates compare against. */
+export interface RunOptions {
+  baseRef?: string;
+}
+
 const IGNORE = ["**/node_modules/**", "**/.git/**", "dist/**"];
 
-function checkGate(gate: Gate, cwd: string): GateResult {
+/** Count lines of `text` that match `re`; calls `onFirst` with the 0-based index of the first hit. */
+function countMatchingLines(text: string, re: RegExp, onFirst?: (i: number) => void): number {
+  const lines = text.split("\n");
+  let n = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (re.test(lines[i])) {
+      if (n === 0 && onFirst) onFirst(i);
+      n++;
+    }
+  }
+  return n;
+}
+
+function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
   const base = { id: gate.id, type: gate.type };
   try {
     switch (gate.type) {
@@ -105,6 +124,59 @@ function checkGate(gate: Gate, cwd: string): GateResult {
         if (entries.length < min) return { ...base, ok: false, reason: `directory has ${entries.length} entries, expected at least ${min}` };
         return { ...base, ok: true, reason: `directory has ${entries.length} entries` };
       }
+      case "no-new": {
+        if (!opts.baseRef) {
+          return { ...base, ok: false, reason: `no git base ref to diff against — pass --base <ref> or run in a repo with an upstream (fail-closed)` };
+        }
+        // Fresh regex per line (drop g/y so lastIndex can't advance between .test calls).
+        const flags = (gate.flags ?? "").replace(/[gy]/g, "");
+        const re = () => new RegExp(gate.pattern, flags);
+        const ignore = gate.ignore ?? [];
+        const workFiles = globSync(gate.glob, { cwd, dot: true, ignore: [...IGNORE, ...ignore] });
+        const baseFiles = listFilesAtRef(cwd, opts.baseRef).filter(
+          (p) => matchesGlob(p, gate.glob, ignore) && !IGNORE.some((ig) => matchesGlob(p, ig)),
+        );
+        const union = new Set<string>([...workFiles, ...baseFiles]);
+        let baseCount = 0;
+        let workCount = 0;
+        let firstNew = "";
+        for (const f of union) {
+          const baseText = readFileAtRef(cwd, opts.baseRef, f);
+          baseCount += baseText == null ? 0 : countMatchingLines(baseText, re());
+          try {
+            const t = fs.readFileSync(path.resolve(cwd, f), "utf8");
+            workCount += countMatchingLines(t, re(), (i) => {
+              if (!firstNew) firstNew = `${f}:${i + 1}`;
+            });
+          } catch {
+            /* file gone in working tree — contributes 0, handled by no-deleted */
+          }
+        }
+        const short = opts.baseRef.slice(0, 12);
+        return workCount > baseCount
+          ? {
+              ...base,
+              ok: false,
+              reason: `+${workCount - baseCount} new /${gate.pattern}/ vs ${short} (base ${baseCount}, now ${workCount})${firstNew ? `, e.g. ${firstNew}` : ""}`,
+            }
+          : { ...base, ok: true, reason: `no new /${gate.pattern}/ vs ${short} (${workCount} ≤ ${baseCount})` };
+      }
+      case "no-deleted": {
+        if (!opts.baseRef) {
+          return { ...base, ok: false, reason: `no git base ref to diff against — pass --base <ref> or run in a repo with an upstream (fail-closed)` };
+        }
+        const ignore = gate.ignore ?? [];
+        const baseFiles = listFilesAtRef(cwd, opts.baseRef).filter((p) => matchesGlob(p, gate.glob, ignore));
+        const missing = baseFiles.filter((f) => !fs.existsSync(path.resolve(cwd, f)));
+        const short = opts.baseRef.slice(0, 12);
+        return missing.length
+          ? {
+              ...base,
+              ok: false,
+              reason: `${missing.length} file(s) matching ${gate.glob} deleted since ${short}: ${missing.slice(0, 3).join(", ")}${missing.length > 3 ? " …" : ""}`,
+            }
+          : { ...base, ok: true, reason: `no ${gate.glob} files deleted vs ${short} (${baseFiles.length} present)` };
+      }
       default:
         return { ...base, ok: false, reason: `unknown gate type` };
     }
@@ -113,9 +185,9 @@ function checkGate(gate: Gate, cwd: string): GateResult {
   }
 }
 
-/** Run every gate in the spec over `cwd`. Pure: same inputs, same verdict. */
-export function runGates(spec: Spec, cwd: string): RunResult {
-  const results = (spec.gates ?? []).map((g) => checkGate(g, cwd));
+/** Run every gate in the spec over `cwd`. Pure: same inputs (incl. git base), same verdict. */
+export function runGates(spec: Spec, cwd: string, opts: RunOptions = {}): RunResult {
+  const results = (spec.gates ?? []).map((g) => checkGate(g, cwd, opts));
   const failed = results.filter((r) => !r.ok);
   return { passed: failed.length === 0, results, failed };
 }
@@ -124,4 +196,34 @@ export function runGates(spec: Spec, cwd: string): RunResult {
 export function isFinishLine(command: string, patterns: string[] | undefined): boolean {
   if (!patterns || !patterns.length) return false;
   return patterns.some((p) => command.includes(p));
+}
+
+export interface Decision {
+  decision: "allow" | "block";
+  reason: string;
+  command: string;
+  result?: RunResult;
+}
+
+/**
+ * The harness-neutral verdict: given a command an agent is about to run, decide
+ * whether to let it through. Any tool — a Claude Code hook, a Cursor/Codex
+ * wrapper, a git hook, a bare shell — can call this and read the same answer, so
+ * enforcement no longer depends on one harness's plugin API. A command that does
+ * not cross the finish line is always allowed; one that does is blocked unless
+ * every gate passes.
+ */
+export function decideCommand(spec: Spec, cwd: string, command: string, opts: RunOptions = {}): Decision {
+  if (!isFinishLine(command, spec.finishLine)) {
+    return { decision: "allow", reason: "not a finish-line command", command };
+  }
+  const result = runGates(spec, cwd, opts);
+  return result.passed
+    ? { decision: "allow", reason: `all ${result.results.length} gates passed`, command, result }
+    : {
+        decision: "block",
+        reason: `${result.failed.length} of ${result.results.length} gates unmet: ${result.failed.map((f) => f.id).join(", ")}`,
+        command,
+        result,
+      };
 }
