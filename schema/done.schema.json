@@ -139,6 +139,40 @@
               "description": "Minimum number of entries. Default 1."
             }
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "glob", "pattern"],
+          "properties": {
+            "id": { "type": "string" },
+            "description": { "type": "string" },
+            "type": { "const": "no-new" },
+            "glob": { "type": "string", "description": "Files to scan." },
+            "pattern": { "type": "string", "description": "Regex whose match count must not increase versus the base ref." },
+            "flags": { "type": "string" },
+            "ignore": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Extra globs to exclude."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "glob"],
+          "properties": {
+            "id": { "type": "string" },
+            "description": { "type": "string" },
+            "type": { "const": "no-deleted" },
+            "glob": { "type": "string", "description": "Files that existed at the base ref and must still exist." },
+            "ignore": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Extra globs to exclude from the must-still-exist set."
+            }
+          }
         }
       ]
     }
