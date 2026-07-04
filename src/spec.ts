@@ -40,6 +40,25 @@ export interface CommandGate extends BaseGate {
   timeout?: number;
 }
 
+/** Trivy must find no leaked secrets and no vulnerabilities at or above severity. */
+export interface TrivyGate extends BaseGate {
+  type: "trivy";
+  /** Path to scan. Default ".". */
+  target?: string;
+  /** Trivy binary to execute. Default "trivy". */
+  trivy?: string;
+  /** Scanners to run. Default ["vuln", "secret"]. */
+  scanners?: ("vuln" | "secret")[];
+  /** Vulnerability severities that block. Default ["CRITICAL"]. */
+  severity?: ("UNKNOWN" | "LOW" | "MEDIUM" | "HIGH" | "CRITICAL")[];
+  /** Also require Trivy to generate a CycloneDX SBOM. Default true. */
+  sbom?: boolean;
+  /** Pass --ignore-unfixed to the vulnerability scan. Default false. */
+  ignoreUnfixed?: boolean;
+  /** Timeout in milliseconds per Trivy invocation. Default 30000 (30s). */
+  timeout?: number;
+}
+
 /**
  * A named evidence file must exist and be non-empty. The escape hatch for steps
  * that aren't machine-observable ("research X first"): the agent writes the file
@@ -104,6 +123,7 @@ export type Gate =
   | FileContainsGate
   | AbsentGate
   | CommandGate
+  | TrivyGate
   | EvidenceGate
   | InstructionSyncGate
   | NotEmptyGate

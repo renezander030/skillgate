@@ -100,6 +100,37 @@
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["id", "type"],
+          "properties": {
+            "id": { "type": "string" },
+            "description": { "type": "string" },
+            "type": { "const": "trivy" },
+            "target": { "type": "string", "description": "Path to scan. Default \".\"." },
+            "trivy": { "type": "string", "description": "Trivy binary to execute. Default \"trivy\"." },
+            "scanners": {
+              "type": "array",
+              "items": { "enum": ["vuln", "secret"] },
+              "description": "Trivy scanners to run. Default [\"vuln\", \"secret\"]."
+            },
+            "severity": {
+              "type": "array",
+              "items": { "enum": ["UNKNOWN", "LOW", "MEDIUM", "HIGH", "CRITICAL"] },
+              "description": "Vulnerability severities that block. Default [\"CRITICAL\"]."
+            },
+            "sbom": {
+              "type": "boolean",
+              "description": "Also require Trivy to generate a CycloneDX SBOM. Default true."
+            },
+            "ignoreUnfixed": {
+              "type": "boolean",
+              "description": "Pass --ignore-unfixed to the vulnerability scan. Default false."
+            },
+            "timeout": { "type": "integer", "minimum": 1, "description": "Timeout in milliseconds per Trivy invocation. Default 30000." }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["id", "type", "file"],
           "properties": {
             "id": { "type": "string" },

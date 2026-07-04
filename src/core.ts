@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import { globSync } from "tinyglobby";
-import { type Spec, type Gate, DEFAULT_COMMAND_TIMEOUT_MS, DEFAULT_NOT_EMPTY_MIN } from "./spec.js";
+import { type Spec, type Gate, type TrivyGate, DEFAULT_COMMAND_TIMEOUT_MS, DEFAULT_NOT_EMPTY_MIN } from "./spec.js";
 import { checkDrift, DEFAULT_THRESHOLD } from "./drift.js";
 import { readFileAtRef, listFilesAtRef, matchesGlob } from "./git.js";
 
@@ -25,6 +25,8 @@ export interface RunOptions {
 }
 
 const IGNORE = ["**/node_modules/**", "**/.git/**", "dist/**"];
+const DEFAULT_TRIVY_SCANNERS: NonNullable<TrivyGate["scanners"]> = ["vuln", "secret"];
+const DEFAULT_TRIVY_SEVERITY: NonNullable<TrivyGate["severity"]> = ["CRITICAL"];
 
 /** Count lines of `text` that match `re`; calls `onFirst` with the 0-based index of the first hit. */
 function countMatchingLines(text: string, re: RegExp, onFirst?: (i: number) => void): number {
@@ -37,6 +39,72 @@ function countMatchingLines(text: string, re: RegExp, onFirst?: (i: number) => v
     }
   }
   return n;
+}
+
+function formatTrivyCommand(bin: string, args: string[]): string {
+  return [bin, ...args].join(" ");
+}
+
+function runTrivyCommand(bin: string, args: string[], cwd: string, timeout: number): { ok: true; stdout: string } | { ok: false; reason: string } {
+  const result = spawnSync(bin, args, {
+    cwd,
+    encoding: "utf8",
+    timeout,
+    maxBuffer: 10 * 1024 * 1024,
+  });
+  const command = formatTrivyCommand(bin, args);
+  if (result.error) {
+    const code = (result.error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return { ok: false, reason: `${bin} not found — install Trivy or set the gate's trivy path` };
+    if (code === "ETIMEDOUT") return { ok: false, reason: `command timed out after ${timeout}ms: ${command}` };
+    return { ok: false, reason: `${command} failed: ${result.error.message}` };
+  }
+  if (result.signal === "SIGTERM") return { ok: false, reason: `command timed out after ${timeout}ms: ${command}` };
+  if ((result.status ?? 1) !== 0) {
+    const tail = String(result.stderr || result.stdout || "")
+      .trim()
+      .split("\n")
+      .slice(-3)
+      .join(" ");
+    return { ok: false, reason: `${command} failed${tail ? `: ${tail}` : ""}` };
+  }
+  return { ok: true, stdout: String(result.stdout || "") };
+}
+
+function checkTrivyGate(gate: TrivyGate, cwd: string): GateResult {
+  const base = { id: gate.id, type: gate.type };
+  const trivy = gate.trivy ?? "trivy";
+  const timeout = gate.timeout ?? DEFAULT_COMMAND_TIMEOUT_MS;
+  const target = gate.target ?? ".";
+  const scanners = gate.scanners ?? DEFAULT_TRIVY_SCANNERS;
+  const ran: string[] = [];
+
+  if (scanners.includes("secret")) {
+    const args = ["fs", "--scanners", "secret", "--exit-code", "1", "--no-progress", target];
+    ran.push("secret");
+    const res = runTrivyCommand(trivy, args, cwd, timeout);
+    if (!res.ok) return { ...base, ok: false, reason: res.reason };
+  }
+
+  if (scanners.includes("vuln")) {
+    const severity = gate.severity ?? DEFAULT_TRIVY_SEVERITY;
+    const args = ["fs", "--scanners", "vuln", "--severity", severity.join(","), "--exit-code", "1", "--no-progress"];
+    if (gate.ignoreUnfixed) args.push("--ignore-unfixed");
+    args.push(target);
+    ran.push(`vuln:${severity.join(",")}`);
+    const res = runTrivyCommand(trivy, args, cwd, timeout);
+    if (!res.ok) return { ...base, ok: false, reason: res.reason };
+  }
+
+  if (gate.sbom !== false) {
+    const args = ["fs", "--format", "cyclonedx", "--no-progress", target];
+    ran.push("sbom:cyclonedx");
+    const res = runTrivyCommand(trivy, args, cwd, timeout);
+    if (!res.ok) return { ...base, ok: false, reason: res.reason };
+    if (!res.stdout.trim()) return { ...base, ok: false, reason: `${formatTrivyCommand(trivy, args)} produced an empty SBOM` };
+  }
+
+  return { ...base, ok: true, reason: `trivy passed (${ran.join(", ")}) on ${target}` };
 }
 
 function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
@@ -94,6 +162,8 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
           return { ...base, ok: false, reason: `\`${gate.run}\` failed: ${tail}` };
         }
       }
+      case "trivy":
+        return checkTrivyGate(gate, cwd);
       case "evidence": {
         const full = path.resolve(cwd, gate.file);
         if (!fs.existsSync(full)) return { ...base, ok: false, reason: `evidence missing: ${gate.file}` };

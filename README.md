@@ -54,6 +54,8 @@ skillgate is the other half. It does not run the agent and it does not retry. It
 
 Use a loop to make progress. Use skillgate to define when progress is allowed to end.
 
+Related positioning: [finish-line gates vs push guards](docs/finish-line-gates-vs-push-guards.md).
+
 ## Install
 
 Pick the path that matches how far you want the guarantee to reach. Every one enforces the *same* `.skillgate/done.yaml`, so you define "done" once.
@@ -134,6 +136,12 @@ gates:
     glob: "**/*.{ts,js,json,md,yaml,yml,env}"
     pattern: 'ghp_[A-Za-z0-9]{36}|sk_live_[A-Za-z0-9]{16,}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----'
     ignore: [".skillgate/**"]
+
+  - id: trivy-clean
+    description: No leaked secrets, critical CVEs, or broken SBOM
+    type: trivy
+    target: "."
+    severity: ["CRITICAL"]
 ```
 
 A `file-contains` gate (e.g. require a touched changelog) and the other types are in the table below; [`examples/`](examples/) has fuller specs.
@@ -146,9 +154,16 @@ A `file-contains` gate (e.g. require a touched changelog) and the other types ar
 | `file-contains` | `file` matches `pattern` (optional `flags`, e.g. `i`) |
 | `absent` | `pattern` appears in **no** file matched by `glob` (reports `file:line`) |
 | `command` | `run` exits 0 — only as deterministic as the command |
+| `trivy` | Trivy finds no leaked secrets, no blocking CVEs, and can generate a CycloneDX SBOM |
 | `evidence` | a named `file` exists and is non-empty |
 | `not-empty` | a directory at `path` contains at least `min` entries (default 1) |
 | `instruction-sync` | every AI agent instruction file (CLAUDE.md, AGENTS.md, Cursor, Copilot…) still agrees with the canonical one (optional `threshold`, default 0.95) |
+
+**Trivy security gate.** Add `type: trivy` when the finish line should stop on
+leaked secrets or critical CVEs. skillgate runs Trivy's secret scan separately
+from the vulnerability scan, so `severity: ["CRITICAL"]` filters CVEs without
+masking secrets. By default it also verifies that Trivy can emit a CycloneDX
+SBOM; set `sbom: false` if your workflow only needs the blocking scan.
 
 **The `evidence` escape hatch.** Gates only see machine-observable output. For a step like "research the API first," have the agent write `.skillgate/evidence/research.md` as it works and gate on that file. Otherwise the step is invisible and the deviation hides.
 
