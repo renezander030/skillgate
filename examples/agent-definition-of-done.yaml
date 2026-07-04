@@ -1,0 +1,62 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/renezander030/skillgate/master/schema/done.schema.json
+# skillgate example: definition-of-done for AI coding agents.
+#
+# Copy this to .skillgate/done.yaml and adapt the commands/globs to your repo.
+# The important property is that the finish line is checked by scripts, not by
+# the model claiming the work is done.
+
+version: 1
+name: agent-definition-of-done
+
+finishLine:
+  - "git commit"
+  - "git push"
+  - "gh release create"
+  - "npm publish"
+
+gates:
+  - id: instruction-sync
+    description: Agent instruction files still agree with the canonical rulebook
+    type: instruction-sync
+
+  - id: tests-pass
+    description: The test suite passes before the agent can cross the finish line
+    type: command
+    run: "npm test --silent"
+
+  - id: generated-artifacts-current
+    description: Generated projections are rebuilt by command, not hand-edited
+    type: command
+    run: "npm run build --if-present --silent"
+
+  - id: no-agent-leftovers
+    description: No obvious agent draft markers remain in tracked text files
+    type: absent
+    glob: "**/*.{ts,js,tsx,jsx,md,yaml,yml,json}"
+    pattern: "(TODO: ask user|FIXME agent|as an AI language model|lorem ipsum)"
+    flags: "i"
+    ignore:
+      - ".git/**"
+      - ".skillgate/**"
+      - "node_modules/**"
+      - "dist/**"
+      - "coverage/**"
+      - "examples/**"
+
+  - id: no-obvious-secrets
+    description: No common API-token or private-key patterns were committed
+    type: absent
+    glob: "**/*.{ts,js,tsx,jsx,md,yaml,yml,json,env}"
+    pattern: "(sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{36}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----)"
+    ignore:
+      - ".git/**"
+      - ".skillgate/**"
+      - "node_modules/**"
+      - "dist/**"
+      - "coverage/**"
+      - "examples/**"
+
+  - id: human-review-recorded
+    description: Public-facing or irreversible work leaves a human review note
+    type: evidence
+    file: ".skillgate/evidence/public-review.md"

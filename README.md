@@ -256,6 +256,7 @@ Use the harness hooks for fast feedback in the loop; rely on CI for the guarante
 - [Quickstart](docs/quickstart.md) — audit, define, check, wire in.
 - [Spec reference](docs/spec-reference.md) — every gate type and option, plus the [JSON Schema](schema/done.schema.json) for editor autocomplete.
 - [Recipes](docs/recipes.md) — Claude Code, pre-commit, CI, loop+gate, self-hosted server.
+- [AI agent reliability checklist](docs/agent-reliability-checklist.md) — ten deterministic checks for production-shaped coding-agent workflows.
 - [Architecture](docs/architecture.md) — how the modules fit and how to add a gate type.
 - [Compatibility & deprecation policy](docs/compatibility.md) — SemVer, spec versioning, the exit-code contract.
 - [Contributing](CONTRIBUTING.md) · [Security policy](SECURITY.md) · [Code of conduct](CODE_OF_CONDUCT.md)
