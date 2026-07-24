@@ -2,6 +2,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { findSpecPath, loadSpec } from "./spec.js";
 import { runGates } from "./core.js";
 import { checkDrift, formatDiff, DEFAULT_THRESHOLD, discover, pickCanonical } from "./drift.js";
@@ -68,6 +70,8 @@ function help(): void {
 Usage:
   skillgate audit                    one-shot read-only audit of this repo (no config needed)
   skillgate check [spec]             run gates, exit 1 if any fail
+  skillgate verify-patch             evaluate an agent's patch in a network-off clone; block apply until your DoD passes
+  skillgate verify-apply             land the verified patch into the real repo (only after verify-patch passes)
   skillgate init                     write an example .skillgate/done.yaml
   skillgate scaffold [--template]    generate .skillgate/evidence/ with stack templates
   skillgate drift                    report AI instruction-file drift, exit 1 if drifted
@@ -320,6 +324,15 @@ if (cmd === "canonical") {
   fs.writeFileSync(markerPath, relPath + "\n");
   console.log(c(C.green, `✓ canonical instruction source set to ${relPath}`));
   process.exit(0);
+}
+
+if (cmd === "verify-patch" || cmd === "verify-apply") {
+  // Isolated patch evaluation: run skillgate's DoD gates inside a network-off clone
+  // (pi-gate engine vendored under isolate/, driven by isolate/verify.mjs).
+  const sub = cmd === "verify-patch" ? "run" : "apply";
+  const engine = fileURLToPath(new URL("../../isolate/verify.mjs", import.meta.url));
+  const child = spawnSync(process.execPath, [engine, sub, ...args.slice(1)], { stdio: "inherit" });
+  process.exit(child.status ?? 1);
 }
 
 console.error(`unknown command: ${cmd}\n`);

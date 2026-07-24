@@ -15,6 +15,7 @@
   },
   "files": [
     "dist/src",
+    "isolate",
     "examples",
     "contrib",
     "schema",
