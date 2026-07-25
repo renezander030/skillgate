@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+## 0.6.0 - 2026-07-25
+
+### Added
+- `skillgate verify-patch` — evaluate an agent's uncommitted patch in a fresh, network-off
+  clone of the repo, run your definition of done against the patched tree, and block apply on
+  failure. The spec is read from the committed HEAD, so a patch cannot weaken the gates that
+  judge it, and a patch that modifies the definition of done never auto-applies (it requires an
+  explicit `--override "<reason>"`). Checks run under a rootless pid/net namespace with hard
+  timeouts, degrading to env-only network blocking where namespaces are unavailable.
+- `skillgate verify-apply` — land a verified patch into the real repo, only after `verify-patch`
+  passed (staleness-guarded) or with an explicit, recorded override.
+- `skillgate gate` — harness-neutral entrypoint: pipe in (or pass `--command`) the command an
+  agent is about to run and get back allow/block (exit 0 allow, 2 block). Reads a Claude Code
+  PreToolUse hook JSON payload or a raw command from stdin; fails closed on error unless
+  `--allow-on-error`.
+- `--pin` / `--base <ref>` — read the spec from the base ref instead of the working tree, so a
+  change under review cannot edit or delete the policy it is judged by (fails closed when no
+  base or pinned spec resolves).
+- Diff-aware regression gates `no-new` and `no-deleted`, which judge a change against a base ref.
+- `trivy` gate type — run a Trivy scan as a gate for vulnerabilities and misconfigurations.
+- Agent-reliability gate pack and `docs/agent-reliability-checklist.md`.
+
+### Docs
+- `docs/finish-line-gates-vs-push-guards.md` — positioning of finish-line gates versus push guards.
+
 ## 0.5.0 - 2026-06-27
 
 ### Added
