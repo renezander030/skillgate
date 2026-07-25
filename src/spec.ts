@@ -40,6 +40,25 @@ export interface CommandGate extends BaseGate {
   timeout?: number;
 }
 
+/** Trivy must find no leaked secrets and no vulnerabilities at or above severity. */
+export interface TrivyGate extends BaseGate {
+  type: "trivy";
+  /** Path to scan. Default ".". */
+  target?: string;
+  /** Trivy binary to execute. Default "trivy". */
+  trivy?: string;
+  /** Scanners to run. Default ["vuln", "secret"]. */
+  scanners?: ("vuln" | "secret")[];
+  /** Vulnerability severities that block. Default ["CRITICAL"]. */
+  severity?: ("UNKNOWN" | "LOW" | "MEDIUM" | "HIGH" | "CRITICAL")[];
+  /** Also require Trivy to generate a CycloneDX SBOM. Default true. */
+  sbom?: boolean;
+  /** Pass --ignore-unfixed to the vulnerability scan. Default false. */
+  ignoreUnfixed?: boolean;
+  /** Timeout in milliseconds per Trivy invocation. Default 30000 (30s). */
+  timeout?: number;
+}
+
 /**
  * A named evidence file must exist and be non-empty. The escape hatch for steps
  * that aren't machine-observable ("research X first"): the agent writes the file
@@ -70,14 +89,49 @@ export interface NotEmptyGate extends BaseGate {
   min?: number;
 }
 
+/**
+ * The count of lines matching `pattern` across `glob` must not INCREASE versus
+ * the base ref. Catches an agent that games a green gate by adding skips, `xit`,
+ * `// eslint-disable`, TODOs or debug artifacts — a passing suite can still hide
+ * a regression. Deterministic and diff-aware: it compares the working tree to the
+ * commit the change forked from, so it needs a resolvable git base (else it fails
+ * closed). See `no-deleted` for the removal side.
+ */
+export interface NoNewGate extends BaseGate {
+  type: "no-new";
+  glob: string;
+  pattern: string;
+  flags?: string;
+  /** Extra globs to exclude (fixtures, the spec file itself). */
+  ignore?: string[];
+}
+
+/**
+ * Every file matching `glob` that existed at the base ref must still exist. Catches
+ * an agent that makes a gate pass by deleting the tests (or docs, or migrations)
+ * that were holding it. Diff-aware; fails closed without a resolvable git base.
+ */
+export interface NoDeletedGate extends BaseGate {
+  type: "no-deleted";
+  glob: string;
+  /** Extra globs to exclude from the "must still exist" set. */
+  ignore?: string[];
+}
+
 export type Gate =
   | FileExistsGate
   | FileContainsGate
   | AbsentGate
   | CommandGate
+  | TrivyGate
   | EvidenceGate
   | InstructionSyncGate
-  | NotEmptyGate;
+  | NotEmptyGate
+  | NoNewGate
+  | NoDeletedGate;
+
+/** Gate types that compare the working tree to a git base ref. */
+export const DIFF_GATE_TYPES = new Set(["no-new", "no-deleted"]);
 
 export interface Spec {
   /**
@@ -119,21 +173,29 @@ export function findSpecPath(dir: string): string | null {
   return null;
 }
 
-export function loadSpec(specPath: string): Spec {
-  const raw = fs.readFileSync(specPath, "utf8");
-  const data = specPath.endsWith(".json") ? JSON.parse(raw) : parseYaml(raw);
+/**
+ * Parse and validate spec text. Split out from {@link loadSpec} so a base-pinned
+ * spec read straight from git (never touching disk) goes through the exact same
+ * validation. `label` names the source in errors (a path, or `<ref>:<path>`).
+ */
+export function parseSpec(raw: string, label: string, isJson: boolean): Spec {
+  const data = isJson ? JSON.parse(raw) : parseYaml(raw);
   if (!data || !Array.isArray(data.gates)) {
-    throw new Error(`invalid spec ${specPath}: missing "gates" array`);
+    throw new Error(`invalid spec ${label}: missing "gates" array`);
   }
   if (data.version != null) {
     if (typeof data.version !== "number" || !Number.isInteger(data.version)) {
-      throw new Error(`invalid spec ${specPath}: "version" must be an integer`);
+      throw new Error(`invalid spec ${label}: "version" must be an integer`);
     }
     if (data.version > SPEC_VERSION) {
       console.warn(
-        `skillgate: spec ${specPath} declares version ${data.version} but this build understands up to ${SPEC_VERSION} — upgrade skillgate; some gates may be misread`,
+        `skillgate: spec ${label} declares version ${data.version} but this build understands up to ${SPEC_VERSION} — upgrade skillgate; some gates may be misread`,
       );
     }
   }
   return data as Spec;
+}
+
+export function loadSpec(specPath: string): Spec {
+  return parseSpec(fs.readFileSync(specPath, "utf8"), specPath, specPath.endsWith(".json"));
 }

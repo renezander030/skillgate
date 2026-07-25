@@ -69,6 +69,26 @@ test/lint/build commands, not anything that hits the network.
 
 On timeout the gate returns a deterministic `command timed out after Nms` reason.
 
+### `trivy`
+
+Run Trivy as a first-class security gate. By default this blocks on any leaked
+secret, any `CRITICAL` vulnerability, or failure to generate a CycloneDX SBOM.
+
+```yaml
+- id: trivy-clean
+  type: trivy
+  target: "."                 # optional, default "."
+  scanners: ["vuln", "secret"] # optional, default shown
+  severity: ["CRITICAL"]       # optional, vulnerability scan only
+  sbom: true                   # optional, default true
+  timeout: 120000              # optional, per Trivy invocation
+```
+
+The secret scan runs separately from the vulnerability scan, so CVE severity
+filtering does not hide leaked credentials. Set `trivy` when the binary is not on
+`PATH`, or `ignoreUnfixed: true` when the vulnerability policy should ignore
+unfixed CVEs.
+
 ### `evidence`
 
 The escape hatch for steps that are not machine-observable ("research X first"): the

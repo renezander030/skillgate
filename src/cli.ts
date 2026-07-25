@@ -4,11 +4,12 @@ import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { findSpecPath, loadSpec } from "./spec.js";
-import { runGates } from "./core.js";
+import { findSpecPath, loadSpec, parseSpec, DEFAULT_SPEC_PATHS, type Spec } from "./spec.js";
+import { runGates, decideCommand } from "./core.js";
 import { checkDrift, formatDiff, DEFAULT_THRESHOLD, discover, pickCanonical } from "./drift.js";
 import { runSync } from "./link.js";
 import { runScaffold, listTemplates } from "./scaffold.js";
+import { resolveBaseRef, mergeBase, readFileAtRef, repoRoot } from "./git.js";
 
 const C = {
   reset: "\x1b[0m",
@@ -72,6 +73,7 @@ Usage:
   skillgate check [spec]             run gates, exit 1 if any fail
   skillgate verify-patch             evaluate an agent's patch in a network-off clone; block apply until your DoD passes
   skillgate verify-apply             land the verified patch into the real repo (only after verify-patch passes)
+  skillgate gate                     allow/block one command (any harness); exit 2 = block
   skillgate init                     write an example .skillgate/done.yaml
   skillgate scaffold [--template]    generate .skillgate/evidence/ with stack templates
   skillgate drift                    report AI instruction-file drift, exit 1 if drifted
@@ -81,8 +83,14 @@ Usage:
   skillgate --version
 
 Flags:
-  --json                   machine-readable output (check, drift)
+  --json                   machine-readable output (check, gate, drift)
   --cwd <dir>              run against another directory
+  --pin                    check/gate: read the spec from the base ref, not the
+                           working tree, so a change can't loosen its own gate
+  --base <ref>             ref for diff-aware gates (no-new, no-deleted) and, with
+                           --pin, the pinned spec. Default: SKILLGATE_BASE or origin/HEAD
+  --command "<cmd>"        gate: the command to judge (else read from stdin)
+  --allow-on-error         gate: allow instead of fail-closed if evaluation errors
   --threshold <0..1>       drift: similarity required to count as in sync (default 0.95)
   --dry-run                sync: show what would change without writing
   --symlink                sync: use symlinks instead of pointer files and copies
@@ -117,6 +125,81 @@ const cwdIdx = args.indexOf("--cwd");
 const cwd = cwdIdx >= 0 ? path.resolve(args[cwdIdx + 1]) : process.cwd();
 
 const updateAgents = args.includes("--update-agents");
+
+const baseIdx = args.indexOf("--base");
+const baseArg = baseIdx >= 0 ? args[baseIdx + 1] : undefined;
+// Pinning is a deliberate opt-in and CLI/env-only — never a spec field, so a spec
+// can't grant itself immunity. `--pin` reads the spec from the base ref; `--base`
+// only names which ref (used for diff-aware gates too), it does not pin on its own.
+const pin = args.includes("--pin");
+
+function die(code: number, msg: string): never {
+  console.error(c(C.red, `skillgate: ${msg}`));
+  process.exit(code);
+}
+
+interface Resolved {
+  spec: Spec;
+  /** merge-base ref diff-aware gates compare against, if one could be resolved. */
+  gateBase?: string;
+  /** ref the spec itself was pinned to (only set in --pin mode). */
+  pinnedTo?: string;
+}
+
+/**
+ * Load the spec and the git base the gates judge against. Without `--pin` the spec
+ * comes from the working tree (a diff base is still resolved best-effort so
+ * diff-aware gates work). With `--pin` the spec is read from the base ref itself —
+ * so the change under review cannot edit or delete the policy it is judged by —
+ * and anything that prevents that (no base, no pinned spec) fails closed.
+ */
+function resolveSpecAndBase(specPathHint: string | null): Resolved {
+  const rawBase = resolveBaseRef(cwd, baseArg);
+  const gateBase = rawBase ? mergeBase(cwd, rawBase) : undefined;
+
+  if (!pin) {
+    if (!specPathHint) die(2, "no spec found — run `skillgate init` or pass a path");
+    return { spec: loadSpec(specPathHint), gateBase };
+  }
+
+  if (!rawBase) {
+    die(2, "--pin: cannot resolve a base ref (set SKILLGATE_BASE or pass --base <ref>) — refusing to run unpinned (fail-closed)");
+  }
+  const root = repoRoot(cwd);
+  if (!root) die(2, "--pin: not a git repository (fail-closed)");
+  const rels = specPathHint
+    ? [path.relative(root, specPathHint).split(path.sep).join("/")]
+    : DEFAULT_SPEC_PATHS;
+  for (const rel of rels) {
+    const raw = readFileAtRef(cwd, gateBase!, rel);
+    if (raw != null) {
+      const label = `${gateBase!.slice(0, 12)}:${rel}`;
+      return { spec: parseSpec(raw, label, rel.endsWith(".json")), gateBase, pinnedTo: gateBase };
+    }
+  }
+  return die(2, `--pin: no committed spec at ${gateBase!.slice(0, 12)} (looked for ${rels.join(", ")}) — commit your .skillgate/done.yaml to the base branch first (fail-closed)`);
+}
+
+/** Read the command an agent is about to run from stdin — raw, or from a hook JSON payload. */
+function readStdinCommand(): string {
+  if (process.stdin.isTTY) return "";
+  let raw = "";
+  try {
+    raw = fs.readFileSync(0, "utf8").trim();
+  } catch {
+    return "";
+  }
+  if (!raw) return "";
+  if (raw.startsWith("{")) {
+    try {
+      const o: any = JSON.parse(raw);
+      return String(o?.tool_input?.command ?? o?.command ?? o?.params?.command ?? o?.tool_input?.cmd ?? raw);
+    } catch {
+      return raw;
+    }
+  }
+  return raw;
+}
 
 if (cmd === "init") {
   const dir = path.join(cwd, ".skillgate");
@@ -188,24 +271,32 @@ if (cmd === "audit") {
 if (cmd === "check") {
   const explicit = args[1] && !args[1].startsWith("-") ? path.resolve(cwd, args[1]) : null;
   const specPath = explicit ?? findSpecPath(cwd);
-  if (!specPath || !fs.existsSync(specPath)) {
+  // Without --pin the working-tree spec must exist; with --pin it may have been
+  // deleted in the change under review — resolveSpecAndBase reads it from the base.
+  if (!pin && (!specPath || !fs.existsSync(specPath))) {
     console.error(c(C.red, "skillgate: no spec found") + " — run `skillgate init` or pass a path");
     process.exit(2);
   }
 
   let result;
+  let pinnedTo: string | undefined;
   try {
-    result = runGates(loadSpec(specPath), cwd);
+    const r = resolveSpecAndBase(specPath && fs.existsSync(specPath) ? specPath : null);
+    pinnedTo = r.pinnedTo;
+    result = runGates(r.spec, cwd, { baseRef: r.gateBase });
   } catch (e: any) {
     console.error(c(C.red, `skillgate: ${e.message}`));
     process.exit(2);
   }
 
   if (json) {
-    console.log(JSON.stringify(result, null, 2));
+    console.log(JSON.stringify({ ...result, pinnedTo }, null, 2));
     process.exit(result.passed ? 0 : 1);
   }
 
+  if (pinnedTo) {
+    console.log(c(C.dim, `  policy pinned to ${pinnedTo.slice(0, 12)} (base ref) — this change cannot loosen it`));
+  }
   for (const r of result.results) {
     const mark = r.ok ? c(C.green, "✓") : c(C.red, "✗");
     console.log(`  ${mark} ${r.id}  ${c(C.dim, r.reason)}`);
@@ -333,6 +424,44 @@ if (cmd === "verify-patch" || cmd === "verify-apply") {
   const engine = fileURLToPath(new URL("../../isolate/verify.mjs", import.meta.url));
   const child = spawnSync(process.execPath, [engine, sub, ...args.slice(1)], { stdio: "inherit" });
   process.exit(child.status ?? 1);
+}
+
+if (cmd === "gate") {
+  // Harness-neutral entrypoint: pipe in (or pass) the command an agent is about to
+  // run; get back allow/block. Works from a Claude Code PreToolUse hook, a Cursor/
+  // Codex/git wrapper, or a bare shell — enforcement no longer needs one harness's
+  // plugin API. Exit 0 = allow, 2 = block. Fails closed on error (unless --allow-on-error).
+  const cIdx = args.indexOf("--command");
+  const command = ((cIdx >= 0 ? args[cIdx + 1] : readStdinCommand()) ?? "").trim();
+  const allowOnError = args.includes("--allow-on-error");
+  const specPath = findSpecPath(cwd);
+
+  if (!pin && !specPath) {
+    // No definition of done configured: nothing to enforce, let it through.
+    const d = { decision: "allow", reason: "no skillgate spec — nothing to enforce", command };
+    console.log(json ? JSON.stringify(d, null, 2) : c(C.dim, `allow · ${d.reason}`));
+    process.exit(0);
+  }
+
+  try {
+    const r = resolveSpecAndBase(specPath && fs.existsSync(specPath) ? specPath : null);
+    const decision = decideCommand(r.spec, cwd, command, { baseRef: r.gateBase });
+    if (json) {
+      console.log(JSON.stringify({ ...decision, pinnedTo: r.pinnedTo }, null, 2));
+    } else if (decision.decision === "block") {
+      console.error(c(C.red, `✗ blocked: `) + decision.reason);
+      for (const f of decision.result?.failed ?? []) console.error(c(C.dim, `    · ${f.id}: ${f.reason}`));
+    } else {
+      console.log(c(C.green, `✓ allow`) + c(C.dim, ` · ${decision.reason}`));
+    }
+    process.exit(decision.decision === "block" ? 2 : 0);
+  } catch (e: any) {
+    const decision = allowOnError ? "allow" : "block";
+    const payload = { decision, reason: `error: ${e.message}`, command };
+    if (json) console.log(JSON.stringify(payload, null, 2));
+    else console.error(c(allowOnError ? C.dim : C.red, `${decision}: ${payload.reason}`));
+    process.exit(allowOnError ? 0 : 2);
+  }
 }
 
 console.error(`unknown command: ${cmd}\n`);

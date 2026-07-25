@@ -49,6 +49,19 @@ condition instead: the loop keeps going until a script, not the model, agrees.
 
 - Script: [`contrib/loop-gate/loop-until-done.sh`](../contrib/loop-gate/loop-until-done.sh).
 
+## Agent definition of done
+
+Use this when a coding agent can edit a repo, run tools, and claim completion.
+The model still proposes the work, but the finish line is owned by deterministic
+checks:
+
+- Example spec: [`examples/agent-definition-of-done.yaml`](../examples/agent-definition-of-done.yaml).
+- Checklist: [`docs/agent-reliability-checklist.md`](agent-reliability-checklist.md).
+
+Copy the example to `.skillgate/done.yaml`, replace the command gates with the
+repo's real test/build/generation commands, and keep public-facing or
+irreversible changes behind an evidence file that a human reviewer fills in.
+
 ## Self-hosted git server (pre-receive)
 
 Enforce the gate server-side on a VPS, so a push is rejected at the remote if the work

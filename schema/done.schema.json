@@ -100,6 +100,37 @@
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["id", "type"],
+          "properties": {
+            "id": { "type": "string" },
+            "description": { "type": "string" },
+            "type": { "const": "trivy" },
+            "target": { "type": "string", "description": "Path to scan. Default \".\"." },
+            "trivy": { "type": "string", "description": "Trivy binary to execute. Default \"trivy\"." },
+            "scanners": {
+              "type": "array",
+              "items": { "enum": ["vuln", "secret"] },
+              "description": "Trivy scanners to run. Default [\"vuln\", \"secret\"]."
+            },
+            "severity": {
+              "type": "array",
+              "items": { "enum": ["UNKNOWN", "LOW", "MEDIUM", "HIGH", "CRITICAL"] },
+              "description": "Vulnerability severities that block. Default [\"CRITICAL\"]."
+            },
+            "sbom": {
+              "type": "boolean",
+              "description": "Also require Trivy to generate a CycloneDX SBOM. Default true."
+            },
+            "ignoreUnfixed": {
+              "type": "boolean",
+              "description": "Pass --ignore-unfixed to the vulnerability scan. Default false."
+            },
+            "timeout": { "type": "integer", "minimum": 1, "description": "Timeout in milliseconds per Trivy invocation. Default 30000." }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["id", "type", "file"],
           "properties": {
             "id": { "type": "string" },
@@ -137,6 +168,40 @@
               "type": "integer",
               "minimum": 1,
               "description": "Minimum number of entries. Default 1."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "glob", "pattern"],
+          "properties": {
+            "id": { "type": "string" },
+            "description": { "type": "string" },
+            "type": { "const": "no-new" },
+            "glob": { "type": "string", "description": "Files to scan." },
+            "pattern": { "type": "string", "description": "Regex whose match count must not increase versus the base ref." },
+            "flags": { "type": "string" },
+            "ignore": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Extra globs to exclude."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "glob"],
+          "properties": {
+            "id": { "type": "string" },
+            "description": { "type": "string" },
+            "type": { "const": "no-deleted" },
+            "glob": { "type": "string", "description": "Files that existed at the base ref and must still exist." },
+            "ignore": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Extra globs to exclude from the must-still-exist set."
             }
           }
         }

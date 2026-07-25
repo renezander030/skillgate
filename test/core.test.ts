@@ -71,6 +71,85 @@ test("command: timeout kills a hanging command", () => {
   assert.equal(gate.reason, "command timed out after 100ms");
 });
 
+test("trivy: runs secret, critical vuln, and sbom checks", () => {
+  const dir = tmpProject({});
+  const trivy = path.join(dir, "fake-trivy.sh");
+  fs.writeFileSync(
+    trivy,
+    `#!/bin/sh
+printf '%s\\n' "$*" >> invocations.txt
+if [ "$2" = "--format" ]; then
+  printf '{"bomFormat":"CycloneDX"}\\n'
+fi
+exit 0
+`,
+  );
+  fs.chmodSync(trivy, 0o755);
+
+  const r = runGates({ gates: [{ id: "trivy-clean", type: "trivy", trivy }] }, dir);
+  assert.equal(r.passed, true);
+  assert.match(r.results[0].reason, /secret, vuln:CRITICAL, sbom:cyclonedx/);
+  const invocations = fs.readFileSync(path.join(dir, "invocations.txt"), "utf8");
+  assert.match(invocations, /fs --scanners secret --exit-code 1 --no-progress \./);
+  assert.match(invocations, /fs --scanners vuln --severity CRITICAL --exit-code 1 --no-progress \./);
+  assert.match(invocations, /fs --format cyclonedx --no-progress \./);
+});
+
+test("trivy: blocks leaked secrets without applying CVE severity filtering", () => {
+  const dir = tmpProject({});
+  const trivy = path.join(dir, "fake-trivy.sh");
+  fs.writeFileSync(
+    trivy,
+    `#!/bin/sh
+if [ "$3" = "secret" ]; then
+  echo "SECRET_KEY leaked" >&2
+  exit 1
+fi
+printf '{"bomFormat":"CycloneDX"}\\n'
+exit 0
+`,
+  );
+  fs.chmodSync(trivy, 0o755);
+
+  const r = runGates({ gates: [{ id: "trivy-clean", type: "trivy", trivy }] }, dir);
+  assert.equal(r.passed, false);
+  assert.equal(r.failed[0].ok, false);
+  assert.match(r.failed[0].reason, /--scanners secret/);
+  assert.match(r.failed[0].reason, /SECRET_KEY leaked/);
+});
+
+test("trivy: supports custom vulnerability severity and skipping sbom", () => {
+  const dir = tmpProject({});
+  const trivy = path.join(dir, "fake-trivy.sh");
+  fs.writeFileSync(
+    trivy,
+    `#!/bin/sh
+printf '%s\\n' "$*" >> invocations.txt
+exit 0
+`,
+  );
+  fs.chmodSync(trivy, 0o755);
+
+  const spec: Spec = {
+    gates: [
+      {
+        id: "trivy-high",
+        type: "trivy",
+        trivy,
+        scanners: ["vuln"],
+        severity: ["HIGH", "CRITICAL"],
+        ignoreUnfixed: true,
+        sbom: false,
+      },
+    ],
+  };
+  const r = runGates(spec, dir);
+  assert.equal(r.passed, true);
+  const invocations = fs.readFileSync(path.join(dir, "invocations.txt"), "utf8");
+  assert.match(invocations, /--severity HIGH,CRITICAL --exit-code 1 --no-progress --ignore-unfixed \./);
+  assert.doesNotMatch(invocations, /--format cyclonedx/);
+});
+
 test("evidence: requires a non-empty file", () => {
   const dir = tmpProject({ "notes.md": "found it" });
   assert.equal(runGates({ gates: [{ id: "e", type: "evidence", file: "notes.md" }] }, dir).passed, true);
