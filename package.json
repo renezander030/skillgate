@@ -1,6 +1,6 @@
 {
   "name": "@reneza/skillgate",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "publishConfig": {
     "access": "public"
   },
@@ -15,6 +15,7 @@
   },
   "files": [
     "dist/src",
+    "isolate",
     "examples",
     "contrib",
     "schema",
@@ -65,6 +66,6 @@
   },
   "devDependencies": {
     "@types/node": "^26.0.0",
-    "typescript": "^6.0.3"
+    "typescript": "^7.0.2"
   }
 }
