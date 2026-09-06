@@ -49,6 +49,56 @@ test("--version prints the package version", () => {
   assert.match(r.stdout.trim(), /^\d+\.\d+\.\d+/);
 });
 
+test("zk commands prove a private repo pass and verify only pinned public facts", () => {
+  const dir = tmpProject({
+    "src/private-customer-code.ts": "export const customerSecret = 'never disclose this source';\n",
+    ".skillgate/done.yaml": "gates:\n  - id: private-source-present\n    type: file-exists\n    file: src/private-customer-code.ts\n",
+  });
+  const challenge = "customer-audit-2026-09-06";
+
+  const keygen = sg(["zk-keygen"], dir);
+  assert.equal(keygen.status, 0, keygen.stderr);
+  assert.ok(fs.existsSync(path.join(dir, ".skillgate", "zk-private-key.json")));
+  assert.match(fs.readFileSync(path.join(dir, ".skillgate", ".gitignore"), "utf8"), /zk-private-key\.json/);
+
+  const policy = sg(["zk-policy-id"], dir);
+  assert.equal(policy.status, 0, policy.stderr);
+  const policyID = policy.stdout.trim();
+  assert.match(policyID, /^[a-f0-9]{64}$/);
+
+  const prove = sg(["zk-prove", "--challenge", challenge, "--out", "pass.proof.json"], dir);
+  assert.equal(prove.status, 0, prove.stderr);
+  assert.match(prove.stdout, /private pass proof created/);
+  const shared = fs.readFileSync(path.join(dir, "pass.proof.json"), "utf8");
+  assert.ok(!shared.includes("never disclose this source"));
+  assert.ok(!shared.includes("private-source-present"));
+
+  const verify = sg(
+    ["zk-verify", "pass.proof.json", "--public-key", ".skillgate/zk-public-key.json", "--expect-policy", policyID, "--challenge", challenge],
+    dir,
+  );
+  assert.equal(verify.status, 0, verify.stderr);
+  assert.match(verify.stdout, /VALID/);
+
+  const replay = sg(
+    ["zk-verify", "pass.proof.json", "--public-key", ".skillgate/zk-public-key.json", "--expect-policy", policyID, "--challenge", "wrong"],
+    dir,
+  );
+  assert.equal(replay.status, 1);
+  assert.match(replay.stderr, /challenge mismatch/);
+});
+
+test("zk-prove refuses a failing gate and writes no proof", () => {
+  const dir = tmpProject({
+    ".skillgate/done.yaml": "gates:\n  - id: missing\n    type: file-exists\n    file: missing.txt\n",
+  });
+  assert.equal(sg(["zk-keygen"], dir).status, 0);
+  const prove = sg(["zk-prove", "--challenge", "audit-1", "--out", "must-not-exist.json"], dir);
+  assert.equal(prove.status, 1);
+  assert.match(prove.stderr, /no proof/);
+  assert.ok(!fs.existsSync(path.join(dir, "must-not-exist.json")));
+});
+
 test("help: bare invocation and --help both exit 0 with usage", () => {
   for (const args of [[], ["help"], ["--help"]]) {
     const r = sg(args, process.cwd());

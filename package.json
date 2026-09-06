@@ -11,7 +11,8 @@
   },
   "exports": {
     ".": "./dist/src/plugin.js",
-    "./core": "./dist/src/core.js"
+    "./core": "./dist/src/core.js",
+    "./zk": "./dist/src/zk.js"
   },
   "files": [
     "dist/src",
@@ -61,6 +62,7 @@
     "url": "https://github.com/renezander030/skillgate/issues"
   },
   "dependencies": {
+    "@mattrglobal/pairing-crypto": "^0.4.2",
     "tinyglobby": "^0.2.10",
     "yaml": "^2.6.0"
   },
