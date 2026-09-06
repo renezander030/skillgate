@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	secretKeySchema   = "skillgate.fhe-metrics-secret.v1"
+	schemaPrivate     = "skillgate.fhe-metrics-secret.v1"
 	publicKeySchema   = "skillgate.fhe-metrics-public.v1"
 	metricSchema      = "skillgate.fhe-metric.v1"
 	aggregateSchema   = "skillgate.fhe-metrics-aggregate.v1"
@@ -104,7 +104,7 @@ func generateFHEKeys() (secretKeyFile, publicKeyFile, error) {
 	id := fheKeyID(pkBytes)
 	public := publicKeyFile{Schema: publicKeySchema, Suite: suite, KeyID: id, PublicKeyBase64: base64.StdEncoding.EncodeToString(pkBytes)}
 	secret := secretKeyFile{
-		Schema: secretKeySchema, Suite: suite, KeyID: id,
+		Schema: schemaPrivate, Suite: suite, KeyID: id,
 		SecretKeyBase64: base64.StdEncoding.EncodeToString(skBytes), PublicKeyBase64: public.PublicKeyBase64,
 	}
 	return secret, public, nil
@@ -278,7 +278,9 @@ func decryptAggregate(secret secretKeyFile, context string, aggregate encryptedA
 			return aggregateResult{}, errors.New("encrypted aggregate contains unexpected data outside the metric slots")
 		}
 	}
-	return aggregateResult{PassedGates: int(passed), TotalGates: int(total), Repositories: aggregate.Repositories}, nil
+	passedGates := int(passed) // #nosec G115 -- bounded by maxRepositories and maxGatesPerReport above.
+	totalGates := int(total)   // #nosec G115 -- bounded by maxRepositories and maxGatesPerReport above.
+	return aggregateResult{PassedGates: passedGates, TotalGates: totalGates, Repositories: aggregate.Repositories}, nil
 }
 
 func loadFHEPublicKey(file publicKeyFile) (bgv.Parameters, *rlwe.PublicKey, error) {
@@ -308,7 +310,7 @@ func loadFHESecretKey(file secretKeyFile) (bgv.Parameters, *rlwe.SecretKey, erro
 	if err != nil {
 		return bgv.Parameters{}, nil, err
 	}
-	if file.Schema != secretKeySchema || file.Suite != suite {
+	if file.Schema != schemaPrivate || file.Suite != suite {
 		return bgv.Parameters{}, nil, errors.New("unsupported FHE secret-key schema or suite")
 	}
 	publicBytes, err := decodeFHEBase64(file.PublicKeyBase64, "public key")
