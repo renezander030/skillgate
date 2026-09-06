@@ -13,6 +13,31 @@
 
 > **A finish-line gate your agent cannot talk its way past.** AI coding agents deviate from your process to reach "done" faster, and asking the model to check its own compliance is the deviating party grading its own paper. `skillgate` is a deterministic evaluator that lives outside the model: it blocks the commit / push / publish until your definition-of-done actually passes. Works with **opencode** (any model you plug in), Claude Code, pre-commit, and CI.
 
+## Prove a private repo passed — without revealing the repo
+
+A customer may need evidence that your private code passed an agreed definition of done, but should not receive your source, test evidence, or internal gate report. Skillgate can issue a selective-disclosure zero-knowledge proof:
+
+| The verifier learns | What stays private |
+| --- | --- |
+| The pinned Skillgate signer attested `PASS` | Repository snapshot and source code |
+| It used the exact policy hash the verifier approved | Gate names, reasons, evidence, and gate count |
+| The proof answers the verifier's fresh challenge | Full signed receipt and signing key |
+
+```bash
+# Gate owner: create once; the private key is gitignored automatically.
+skillgate zk-keygen
+skillgate zk-policy-id                 # share this and zk-public-key.json in advance
+
+# Verifier sends a fresh challenge; the isolated gate answers it after all gates pass.
+skillgate zk-prove --challenge customer-audit-42 --out pass.proof.json
+
+# Verifier: use the public key and policy hash you pinned independently.
+skillgate zk-verify pass.proof.json --public-key zk-public-key.json \
+  --expect-policy <approved-policy-hash> --challenge customer-audit-42
+```
+
+This is an **experimental attestation preview**, not a proof that the evaluator itself ran correctly. The BBS proof establishes that the holder of the pinned key signed a complete pass receipt while hiding selected fields. Put that key on the separate gate server your agent cannot access; a local key the agent can steal proves little. The pairing-crypto implementation has not received an independent implementation audit. Read the exact claim and threat model in [private pass proofs](docs/private-pass-proofs.md).
+
 ![skillgate blocking a git commit because two gates fail, then letting it through once they are fixed](assets/skillgate-demo.gif)
 
 ## Audit your repo in one command

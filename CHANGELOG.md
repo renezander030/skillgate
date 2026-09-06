@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+- `skillgate zk-keygen`, `zk-policy-id`, `zk-prove`, and `zk-verify` — issue and verify
+  challenge-bound BBS selective-disclosure proofs that reveal only `PASS` and an approved
+  policy hash while hiding the private repository snapshot, gate details, evidence, reasons,
+  and count. The commands fail closed on a failing gate, wrong signer, wrong policy, replayed
+  challenge, or altered proof. This is explicitly an experimental signer attestation, not a
+  zkVM proof of the gate evaluator.
+
 ## 0.6.0 - 2026-07-25
 
 ### Added

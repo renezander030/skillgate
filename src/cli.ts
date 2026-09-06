@@ -10,6 +10,15 @@ import { checkDrift, formatDiff, DEFAULT_THRESHOLD, discover, pickCanonical } fr
 import { runSync } from "./link.js";
 import { runScaffold, listTemplates } from "./scaffold.js";
 import { resolveBaseRef, mergeBase, readFileAtRef, repoRoot } from "./git.js";
+import {
+  createPrivatePassProof,
+  generateKeyFiles,
+  loadPrivateKey,
+  loadPublicKey,
+  parsePrivatePassProof,
+  policyHash,
+  verifyPrivatePassProof,
+} from "./zk.js";
 
 const C = {
   reset: "\x1b[0m",
@@ -73,6 +82,10 @@ Usage:
   skillgate check [spec]             run gates, exit 1 if any fail
   skillgate verify-patch             evaluate an agent's patch in a network-off clone; block apply until your DoD passes
   skillgate verify-apply             land the verified patch into the real repo (only after verify-patch passes)
+  skillgate zk-keygen                create a private BBS signing key and shareable public key
+  skillgate zk-policy-id [spec]      print the stable hash a verifier should pin
+  skillgate zk-prove [spec]          prove PASS while hiding private repo and gate details
+  skillgate zk-verify <proof>        verify a private pass proof against pinned inputs
   skillgate gate                     allow/block one command (any harness); exit 2 = block
   skillgate init                     write an example .skillgate/done.yaml
   skillgate scaffold [--template]    generate .skillgate/evidence/ with stack templates
@@ -95,6 +108,11 @@ Flags:
   --dry-run                sync: show what would change without writing
   --symlink                sync: use symlinks instead of pointer files and copies
   --update-agents          scaffold: update AGENTS.md/CLAUDE.md with evidence workflow
+  --private-key <file>     zk-keygen/zk-prove: BBS private key file
+  --public-key <file>      zk-keygen/zk-verify: BBS public key file
+  --challenge <text>       zk-prove/zk-verify: verifier-provided anti-replay challenge
+  --expect-policy <hash>   zk-verify: expected policy hash from zk-policy-id
+  --out <file>             zk-prove: proof bundle path
 
 Templates (scaffold --template):
   generic    General-purpose evidence workflow
@@ -199,6 +217,102 @@ function readStdinCommand(): string {
     }
   }
   return raw;
+}
+
+function option(name: string): string | undefined {
+  const index = args.indexOf(name);
+  return index >= 0 ? args[index + 1] : undefined;
+}
+
+function zkSpecPath(): string | null {
+  const explicit = args[1] && !args[1].startsWith("-") ? path.resolve(cwd, args[1]) : null;
+  return explicit ?? findSpecPath(cwd);
+}
+
+function resolvedZKSpec(): Resolved {
+  const specPath = zkSpecPath();
+  if (!pin && (!specPath || !fs.existsSync(specPath))) {
+    die(2, "no spec found — run `skillgate init` or pass a path immediately after the command");
+  }
+  return resolveSpecAndBase(specPath && fs.existsSync(specPath) ? specPath : null);
+}
+
+if (cmd === "zk-keygen") {
+  const defaultPrivate = path.join(cwd, ".skillgate", "zk-private-key.json");
+  const privateFile = path.resolve(cwd, option("--private-key") ?? defaultPrivate);
+  const publicFile = path.resolve(cwd, option("--public-key") ?? path.join(cwd, ".skillgate", "zk-public-key.json"));
+  try {
+    const publicKey = await generateKeyFiles(privateFile, publicFile);
+    if (privateFile === defaultPrivate) {
+      const ignoreFile = path.join(cwd, ".skillgate", ".gitignore");
+      const ignoredName = "zk-private-key.json";
+      const old = fs.existsSync(ignoreFile) ? fs.readFileSync(ignoreFile, "utf8") : "";
+      if (!old.split(/\r?\n/).includes(ignoredName)) {
+        fs.writeFileSync(ignoreFile, old + (old && !old.endsWith("\n") ? "\n" : "") + ignoredName + "\n");
+      }
+    }
+    console.log(c(C.green, "✓ generated private-pass key pair"));
+    console.log(`  key ID:  ${publicKey.key_id}`);
+    console.log(`  private: ${privateFile} (keep secret; mode 0600)`);
+    console.log(`  public:  ${publicFile} (share with verifiers)`);
+    process.exit(0);
+  } catch (error: any) {
+    die(1, error.message);
+  }
+}
+
+if (cmd === "zk-policy-id") {
+  try {
+    const resolved = resolvedZKSpec();
+    console.log(policyHash(resolved.spec));
+    process.exit(0);
+  } catch (error: any) {
+    die(2, error.message);
+  }
+}
+
+if (cmd === "zk-prove") {
+  const challenge = option("--challenge") ?? "";
+  const privateFile = path.resolve(cwd, option("--private-key") ?? path.join(cwd, ".skillgate", "zk-private-key.json"));
+  const outputFile = path.resolve(cwd, option("--out") ?? "skillgate-pass.proof.json");
+  if (!challenge) die(2, "zk-prove requires a verifier-provided --challenge");
+  try {
+    const resolved = resolvedZKSpec();
+    const result = runGates(resolved.spec, cwd, { baseRef: resolved.gateBase });
+    if (!result.passed) {
+      console.error(c(C.red, `✗ no proof: ${result.failed.length} of ${result.results.length} gates failed`));
+      for (const failure of result.failed) console.error(c(C.dim, `    · ${failure.id}: ${failure.reason}`));
+      process.exit(1);
+    }
+    const key = loadPrivateKey(privateFile);
+    const proof = await createPrivatePassProof(resolved.spec, result, cwd, key, challenge);
+    fs.writeFileSync(outputFile, JSON.stringify(proof, null, 2) + "\n", { encoding: "utf8", mode: 0o600, flag: "wx" });
+    console.log(c(C.green, `✓ private pass proof created: ${outputFile}`));
+    console.log(`  ${proof.proof_bytes} bytes in ${proof.prover_ms} ms; repo snapshot, gate details, reasons, and counts stayed private`);
+    process.exit(0);
+  } catch (error: any) {
+    die(1, error.message);
+  }
+}
+
+if (cmd === "zk-verify") {
+  const proofArg = args[1] && !args[1].startsWith("-") ? args[1] : "";
+  const publicArg = option("--public-key");
+  const expectedPolicy = option("--expect-policy") ?? "";
+  const challenge = option("--challenge") ?? "";
+  if (!proofArg || !publicArg || !expectedPolicy || !challenge) {
+    die(2, "usage: skillgate zk-verify <proof> --public-key <file> --expect-policy <hash> --challenge <text>");
+  }
+  try {
+    const proof = parsePrivatePassProof(fs.readFileSync(path.resolve(cwd, proofArg), "utf8"));
+    const publicKey = loadPublicKey(path.resolve(cwd, publicArg));
+    await verifyPrivatePassProof(proof, publicKey, expectedPolicy, challenge);
+    console.log(c(C.green, "✓ VALID: the pinned Skillgate signer attested PASS under the expected policy"));
+    console.log("  private repo snapshot, gate details, reasons, and counts were not disclosed");
+    process.exit(0);
+  } catch (error: any) {
+    die(1, `INVALID: ${error.message}`);
+  }
 }
 
 if (cmd === "init") {

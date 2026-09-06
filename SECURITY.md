@@ -27,3 +27,10 @@ new patch version with a note in [`CHANGELOG.md`](CHANGELOG.md).
 skillgate runs `command`-type gates, which execute the shell command you put in your
 own `done.yaml`. Treat a `done.yaml` from an untrusted source the same way you would
 treat any script in that repo — review it before running `skillgate check`.
+
+The experimental private-pass commands create a BBS signing key. The default private
+key is mode `0600` and added to `.skillgate/.gitignore`, but filesystem permissions and
+gitignore are not an isolation boundary. For a credible third-party attestation, keep
+the private key on a separate gate server the coding agent cannot access, pin its public
+key out of band, and rotate it after suspected compromise. A party holding that private
+key can issue a pass attestation without running Skillgate.
