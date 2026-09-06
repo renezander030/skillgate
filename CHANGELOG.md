@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0 - 2026-09-06
+
 ### Added
 - `skillgate zk-keygen`, `zk-policy-id`, `zk-prove`, and `zk-verify` — issue and verify
   challenge-bound BBS selective-disclosure proofs that reveal only `PASS` and an approved
