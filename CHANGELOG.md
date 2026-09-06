@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0 - 2026-09-06
+
 ### Added
 - Experimental `skillgate fhe-metrics` commands for adding gate pass/total counts from
   3–128 private repositories while the collector sees only ciphertext, then decrypting one
