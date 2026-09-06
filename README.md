@@ -13,6 +13,38 @@
 
 > **A finish-line gate your agent cannot talk its way past.** AI coding agents deviate from your process to reach "done" faster, and asking the model to check its own compliance is the deviating party grading its own paper. `skillgate` is a deterministic evaluator that lives outside the model: it blocks the commit / push / publish until your definition-of-done actually passes. Works with **opencode** (any model you plug in), Claude Code, pre-commit, and CI.
 
+## See the fleet total without seeing any private repo
+
+Suppose a customer or manager wants one answer: **"What percentage of our required checks pass across all private repositories?"** Sending every repository's report reveals which team or codebase is struggling. Skillgate's experimental encrypted-metrics flow keeps each repository's counts unreadable while a separate collector adds them together.
+
+```text
+private repo A ─┐
+private repo B ─┼─ encrypted counts → collector adds them → key owner opens one fleet total
+private repo C ─┘                    (collector cannot read the counts)
+```
+
+Each repository still sends a file, but it contains ciphertext—not source code, gate names, failure reasons, or readable pass/fail counts. Use at least three repositories, keep the collector separate from the decryption-key owner, and release only the final group total.
+
+```bash
+skillgate fhe-metrics keygen
+
+# Run locally in each repo. Give every repo a different random token.
+skillgate check --json | skillgate fhe-metrics encrypt \
+  --context 2026-Q3 --repository <random-token> --out repo.metric.json
+
+# The collector can combine files without opening them.
+skillgate fhe-metrics aggregate --context 2026-Q3 --out fleet.aggregate.json \
+  repo-a.metric.json repo-b.metric.json repo-c.metric.json
+
+# The key owner opens the aggregate and checks its declared group size.
+skillgate fhe-metrics decrypt --context 2026-Q3 --expected 3 \
+  --minimum-percent 90 fleet.aggregate.json
+```
+
+**Use it when:** several private repos need one shared quality number and the collector must not learn any repo's result. **Skip it when:** one repo needs to prove it passed (use the proof below), fewer than three repos contribute, or the same person will hold the secret key and individual encrypted files.
+
+This optional preview needs Go 1.25+ on first use and downloads its pinned cryptography dependency. It performs one bounded encrypted addition—not arbitrary programs over encrypted data—and has not received an independent security audit. Read the practical setup, separation of roles, and failure modes in [encrypted fleet metrics](docs/fhe-metrics.md).
+
 ## Prove a private repo passed — without revealing the repo
 
 A customer may need evidence that your private code passed an agreed definition of done, but should not receive your source, test evidence, or internal gate report. Skillgate can issue a selective-disclosure zero-knowledge proof:

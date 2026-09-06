@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+- Experimental `skillgate fhe-metrics` commands for adding gate pass/total counts from
+  3–128 private repositories while the collector sees only ciphertext, then decrypting one
+  declared fleet percentage against an expected contributor count. The optional helper uses
+  a fixed, shallow Lattigo BGV circuit and requires Go 1.25+; it is not an audited service or
+  an arbitrary-depth FHE engine.
+
 ## 0.7.0 - 2026-09-06
 
 ### Added

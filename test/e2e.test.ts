@@ -104,6 +104,7 @@ test("help: bare invocation and --help both exit 0 with usage", () => {
     const r = sg(args, process.cwd());
     assert.equal(r.status, 0);
     assert.match(r.stdout, /Usage:/);
+    assert.match(r.stdout, /fhe-metrics/);
   }
 });
 
