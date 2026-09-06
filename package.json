@@ -49,7 +49,10 @@
     "instruction-drift",
     "cursor",
     "github-copilot",
-    "ai-coding"
+    "ai-coding",
+    "homomorphic-encryption",
+    "fully-homomorphic-encryption",
+    "privacy-preserving"
   ],
   "license": "MIT",
   "author": "Rene Zander",

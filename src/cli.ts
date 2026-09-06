@@ -86,6 +86,7 @@ Usage:
   skillgate zk-policy-id [spec]      print the stable hash a verifier should pin
   skillgate zk-prove [spec]          prove PASS while hiding private repo and gate details
   skillgate zk-verify <proof>        verify a private pass proof against pinned inputs
+  skillgate fhe-metrics              add private repo counts while they stay encrypted
   skillgate gate                     allow/block one command (any harness); exit 2 = block
   skillgate init                     write an example .skillgate/done.yaml
   skillgate scaffold [--template]    generate .skillgate/evidence/ with stack templates
@@ -114,6 +115,9 @@ Flags:
   --expect-policy <hash>   zk-verify: expected policy hash from zk-policy-id
   --out <file>             zk-prove: proof bundle path
 
+Experimental encrypted fleet totals:
+  skillgate fhe-metrics help         show the private aggregation walkthrough
+
 Templates (scaffold --template):
   generic    General-purpose evidence workflow
   ts-lib     TypeScript library — typecheck, test, lint, coverage
@@ -136,6 +140,58 @@ if (cmd === "--version" || cmd === "-v") {
 if (!cmd || cmd === "help" || cmd === "--help" || cmd === "-h") {
   help();
   process.exit(0);
+}
+
+if (cmd === "fhe-metrics") {
+  const helper = fileURLToPath(new URL("../../contrib/fhe-metrics", import.meta.url));
+  const forwarded = args.slice(1);
+  const cwdIndex = forwarded.indexOf("--cwd");
+  let callerCwd = process.cwd();
+  if (cwdIndex >= 0) {
+    const requested = forwarded[cwdIndex + 1];
+    if (!requested || requested.startsWith("--")) {
+      console.error("skillgate: fhe-metrics --cwd requires a directory");
+      process.exit(2);
+    }
+    callerCwd = path.resolve(requested);
+    forwarded.splice(cwdIndex, 2);
+  }
+  let buildDir = "";
+  try {
+    buildDir = fs.mkdtempSync(path.join(os.tmpdir(), "skillgate-fhe-metrics-"));
+    const binary = path.join(buildDir, process.platform === "win32" ? "fhe-metrics.exe" : "fhe-metrics");
+    const build = spawnSync("go", ["build", "-o", binary, "."], {
+      cwd: helper,
+      stdio: ["ignore", "inherit", "inherit"],
+    });
+    if (build.error) {
+      const detail = (build.error as NodeJS.ErrnoException).code === "ENOENT"
+        ? "Go 1.25+ is required for this optional encrypted-computation preview"
+        : build.error.message;
+      console.error(`skillgate: could not build fhe-metrics: ${detail}`);
+      process.exitCode = 2;
+    } else if (build.status !== 0) {
+      process.exitCode = 2;
+    } else {
+      const child = spawnSync(binary, forwarded, {
+        cwd: helper,
+        env: { ...process.env, SKILLGATE_FHE_CALLER_CWD: callerCwd },
+        stdio: "inherit",
+      });
+      if (child.error) {
+        console.error(`skillgate: could not start fhe-metrics: ${child.error.message}`);
+        process.exitCode = 2;
+      } else {
+        process.exitCode = child.status ?? 1;
+      }
+    }
+  } catch (error: any) {
+    console.error(`skillgate: could not prepare fhe-metrics: ${error.message}`);
+    process.exitCode = 2;
+  } finally {
+    if (buildDir) fs.rmSync(buildDir, { recursive: true, force: true });
+  }
+  process.exit(process.exitCode ?? 1);
 }
 
 const json = args.includes("--json");
