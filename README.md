@@ -13,6 +13,22 @@
 
 > **A finish-line gate your agent cannot talk its way past.** AI coding agents deviate from your process to reach "done" faster, and asking the model to check its own compliance is the deviating party grading its own paper. `skillgate` is a deterministic evaluator that lives outside the model: it blocks the commit / push / publish until your definition-of-done actually passes. Works with **opencode** (any model you plug in), Claude Code, pre-commit, and CI.
 
+![skillgate blocking a git commit because two gates fail, then letting it through once they are fixed](assets/skillgate-demo.gif)
+
+## Audit your repo in one command
+
+No install, no signup, no config. One read-only command shows which corners your agent could cut right now:
+
+```bash
+npx @reneza/skillgate@latest audit
+```
+
+![skillgate audit: a one-command, read-only report scoring a repo against a definition of done — passing the test gate, flagging a stray TODO and a leaked secret](assets/skillgate-audit.png)
+
+Wired into your agent, those same checks deny the finish-line command (commit / push / publish) until they pass. [Wire it in.](#install)
+
+For more practical checks for AI agents, [follow René on GitHub](https://github.com/renezander030).
+
 ## See the fleet total without seeing any private repo
 
 Suppose a customer or manager wants one answer: **"What percentage of our required checks pass across all private repositories?"** Sending every repository's report reveals which team or codebase is struggling. Skillgate's experimental encrypted-metrics flow keeps each repository's counts unreadable while a separate collector adds them together.
@@ -69,20 +85,6 @@ skillgate zk-verify pass.proof.json --public-key zk-public-key.json \
 ```
 
 This is an **experimental attestation preview**, not a proof that the evaluator itself ran correctly. The BBS proof establishes that the holder of the pinned key signed a complete pass receipt while hiding selected fields. Put that key on the separate gate server your agent cannot access; a local key the agent can steal proves little. The pairing-crypto implementation has not received an independent implementation audit. Read the exact claim and threat model in [private pass proofs](docs/private-pass-proofs.md).
-
-![skillgate blocking a git commit because two gates fail, then letting it through once they are fixed](assets/skillgate-demo.gif)
-
-## Audit your repo in one command
-
-No install, no signup, no config. One read-only command shows which corners your agent could cut right now:
-
-```bash
-npx @reneza/skillgate@latest audit
-```
-
-![skillgate audit: a one-command, read-only report scoring a repo against a definition of done — passing the test gate, flagging a stray TODO and a leaked secret](assets/skillgate-audit.png)
-
-Wired into your agent, those same checks deny the finish-line command (commit / push / publish) until they pass. [Wire it in.](#install)
 
 ## This is a measured, structural failure, not a vibe
 
