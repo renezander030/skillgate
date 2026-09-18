@@ -1,4 +1,4 @@
-import { findSpecPath, loadSpec } from "./spec.js";
+import { findSpecPath, loadSpec, specRoot } from "./spec.js";
 import { runGates, isFinishLine } from "./core.js";
 
 /**
@@ -31,12 +31,11 @@ export const SkillGate = async (ctx: any): Promise<Hooks> => {
       try {
         spec = loadSpec(specPath);
       } catch (e: any) {
-        process.stderr.write(`skillgate: warning — could not load spec at ${specPath}: ${e.message}\n`);
-        return; // never block on a broken spec
+        throw new Error(`skillgate blocked tool execution: configured policy is invalid (${e.message})`);
       }
       if (!isFinishLine(command, spec.finishLine)) return;
 
-      const result = runGates(spec, directory);
+      const result = runGates(spec, specRoot(specPath));
       if (!result.passed) {
         const detail = result.failed.map((f) => `${f.id} (${f.reason})`).join("; ");
         throw new Error(

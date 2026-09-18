@@ -1,27 +1,45 @@
 import fs from "node:fs";
 import path from "node:path";
-import { execSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { globSync } from "tinyglobby";
-import { type Spec, type Gate, type TrivyGate, DEFAULT_COMMAND_TIMEOUT_MS, DEFAULT_NOT_EMPTY_MIN } from "./spec.js";
+import {
+  type Spec,
+  type Gate,
+  type TrivyGate,
+  DEFAULT_COMMAND_TIMEOUT_MS,
+  DEFAULT_NOT_EMPTY_MIN,
+  DEFAULT_RUN_TIMEOUT_MS,
+} from "./spec.js";
 import { checkDrift, DEFAULT_THRESHOLD } from "./drift.js";
 import { readFileAtRef, listFilesAtRef, matchesGlob } from "./git.js";
+import { isStructuredCommandMatch } from "./command.js";
+import { runShellCommand } from "./process.js";
 
 export interface GateResult {
   id: string;
   type: string;
   ok: boolean;
   reason: string;
+  /** Explicit execution state; `not-run` is always blocking. */
+  status?: "pass" | "fail" | "not-run";
+  durationMs?: number;
 }
 
 export interface RunResult {
   passed: boolean;
   results: GateResult[];
   failed: GateResult[];
+  durationMs?: number;
+  timeoutMs?: number;
 }
 
 /** Evaluation context. `baseRef` is the git ref diff-aware gates compare against. */
 export interface RunOptions {
   baseRef?: string;
+  /** Override the spec's total wall-clock budget for this run. */
+  timeoutMs?: number;
+  /** Internal per-gate cap derived from the remaining total budget. */
+  remainingMs?: number;
 }
 
 const IGNORE = ["**/node_modules/**", "**/.git/**", "dist/**"];
@@ -71,10 +89,12 @@ function runTrivyCommand(bin: string, args: string[], cwd: string, timeout: numb
   return { ok: true, stdout: String(result.stdout || "") };
 }
 
-function checkTrivyGate(gate: TrivyGate, cwd: string): GateResult {
+function checkTrivyGate(gate: TrivyGate, cwd: string, remainingMs?: number): GateResult {
   const base = { id: gate.id, type: gate.type };
   const trivy = gate.trivy ?? "trivy";
-  const timeout = gate.timeout ?? DEFAULT_COMMAND_TIMEOUT_MS;
+  const started = Date.now();
+  const configuredTimeout = gate.timeout ?? DEFAULT_COMMAND_TIMEOUT_MS;
+  const nextTimeout = () => Math.max(1, Math.min(configuredTimeout, (remainingMs ?? Number.POSITIVE_INFINITY) - (Date.now() - started)));
   const target = gate.target ?? ".";
   const scanners = gate.scanners ?? DEFAULT_TRIVY_SCANNERS;
   const ran: string[] = [];
@@ -82,7 +102,7 @@ function checkTrivyGate(gate: TrivyGate, cwd: string): GateResult {
   if (scanners.includes("secret")) {
     const args = ["fs", "--scanners", "secret", "--exit-code", "1", "--no-progress", target];
     ran.push("secret");
-    const res = runTrivyCommand(trivy, args, cwd, timeout);
+    const res = runTrivyCommand(trivy, args, cwd, nextTimeout());
     if (!res.ok) return { ...base, ok: false, reason: res.reason };
   }
 
@@ -92,14 +112,14 @@ function checkTrivyGate(gate: TrivyGate, cwd: string): GateResult {
     if (gate.ignoreUnfixed) args.push("--ignore-unfixed");
     args.push(target);
     ran.push(`vuln:${severity.join(",")}`);
-    const res = runTrivyCommand(trivy, args, cwd, timeout);
+    const res = runTrivyCommand(trivy, args, cwd, nextTimeout());
     if (!res.ok) return { ...base, ok: false, reason: res.reason };
   }
 
   if (gate.sbom !== false) {
     const args = ["fs", "--format", "cyclonedx", "--no-progress", target];
     ran.push("sbom:cyclonedx");
-    const res = runTrivyCommand(trivy, args, cwd, timeout);
+    const res = runTrivyCommand(trivy, args, cwd, nextTimeout());
     if (!res.ok) return { ...base, ok: false, reason: res.reason };
     if (!res.stdout.trim()) return { ...base, ok: false, reason: `${formatTrivyCommand(trivy, args)} produced an empty SBOM` };
   }
@@ -127,7 +147,7 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
           : { ...base, ok: false, reason: `${gate.file} missing /${gate.pattern}/` };
       }
       case "absent": {
-        const re = new RegExp(gate.pattern, gate.flags ?? "");
+        const re = new RegExp(gate.pattern, (gate.flags ?? "").replace(/[gy]/g, ""));
         const files = globSync(gate.glob, { cwd, dot: true, ignore: [...IGNORE, ...(gate.ignore ?? [])] });
         for (const f of files) {
           let text: string;
@@ -146,24 +166,20 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
         return { ...base, ok: true, reason: `no /${gate.pattern}/ in ${gate.glob}` };
       }
       case "command": {
-        const timeout = gate.timeout ?? DEFAULT_COMMAND_TIMEOUT_MS;
-        try {
-          execSync(gate.run, { cwd, stdio: "pipe", encoding: "utf8", timeout });
-          return { ...base, ok: true, reason: `\`${gate.run}\` exited 0` };
-        } catch (e: any) {
-          if (e.killed || e.code === "ETIMEDOUT") {
-            return { ...base, ok: false, reason: `command timed out after ${timeout}ms` };
-          }
-          const tail = String(e.stderr || e.stdout || e.message || "")
-            .trim()
-            .split("\n")
-            .slice(-2)
-            .join(" ");
-          return { ...base, ok: false, reason: `\`${gate.run}\` failed: ${tail}` };
-        }
+        const timeout = Math.max(1, Math.min(gate.timeout ?? DEFAULT_COMMAND_TIMEOUT_MS, opts.remainingMs ?? Number.POSITIVE_INFINITY));
+        const result = runShellCommand(gate.run, cwd, timeout);
+        if (result.timedOut) return { ...base, ok: false, reason: `command timed out after ${timeout}ms` };
+        if (result.error) return { ...base, ok: false, reason: `\`${gate.run}\` failed: ${result.error.message}` };
+        if (result.status === 0) return { ...base, ok: true, reason: `\`${gate.run}\` exited 0` };
+        const tail = String(result.stderr || result.stdout || "")
+          .trim()
+          .split("\n")
+          .slice(-2)
+          .join(" ");
+        return { ...base, ok: false, reason: `\`${gate.run}\` failed${tail ? `: ${tail}` : ` with exit ${result.status ?? 1}`}` };
       }
       case "trivy":
-        return checkTrivyGate(gate, cwd);
+        return checkTrivyGate(gate, cwd, opts.remainingMs);
       case "evidence": {
         const full = path.resolve(cwd, gate.file);
         if (!fs.existsSync(full)) return { ...base, ok: false, reason: `evidence missing: ${gate.file}` };
@@ -257,15 +273,38 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
 
 /** Run every gate in the spec over `cwd`. Pure: same inputs (incl. git base), same verdict. */
 export function runGates(spec: Spec, cwd: string, opts: RunOptions = {}): RunResult {
-  const results = (spec.gates ?? []).map((g) => checkGate(g, cwd, opts));
+  const started = Date.now();
+  const timeoutMs = opts.timeoutMs ?? spec.timeout ?? DEFAULT_RUN_TIMEOUT_MS;
+  const results: GateResult[] = [];
+  for (const gate of spec.gates ?? []) {
+    const elapsed = Date.now() - started;
+    const remainingMs = timeoutMs - elapsed;
+    if (remainingMs <= 0) {
+      results.push({
+        id: gate.id,
+        type: gate.type,
+        ok: false,
+        status: "not-run",
+        durationMs: 0,
+        reason: `not run: overall timeout exhausted after ${timeoutMs}ms`,
+      });
+      continue;
+    }
+    const gateStarted = Date.now();
+    const result = checkGate(gate, cwd, { ...opts, remainingMs });
+    results.push({
+      ...result,
+      status: result.ok ? "pass" : "fail",
+      durationMs: Date.now() - gateStarted,
+    });
+  }
   const failed = results.filter((r) => !r.ok);
-  return { passed: failed.length === 0, results, failed };
+  return { passed: failed.length === 0, results, failed, durationMs: Date.now() - started, timeoutMs };
 }
 
 /** True when `command` crosses one of the configured finish-line patterns. */
 export function isFinishLine(command: string, patterns: string[] | undefined): boolean {
-  if (!patterns || !patterns.length) return false;
-  return patterns.some((p) => command.includes(p));
+  return isStructuredCommandMatch(command, patterns);
 }
 
 export interface Decision {

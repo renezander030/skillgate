@@ -7,8 +7,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-const CLI = new URL("../src/cli.js", import.meta.url).pathname;
+const CLI = fileURLToPath(new URL("../src/cli.js", import.meta.url));
 
 // Built at runtime so the literal 16+ char token never appears in source — otherwise
 // skillgate's own no-secrets gate would (correctly) flag this test file.
@@ -20,10 +21,11 @@ interface Run {
   stderr: string;
 }
 
-function sg(args: string[], cwd: string): Run {
+function sg(args: string[], cwd: string, env?: NodeJS.ProcessEnv): Run {
   try {
     const stdout = execFileSync(process.execPath, [CLI, ...args], {
       cwd,
+      env: env ? { ...process.env, ...env } : process.env,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -97,6 +99,13 @@ test("zk-prove refuses a failing gate and writes no proof", () => {
   assert.equal(prove.status, 1);
   assert.match(prove.stderr, /no proof/);
   assert.ok(!fs.existsSync(path.join(dir, "must-not-exist.json")));
+});
+
+test("fhe-metrics fails clearly when its optional Go runtime is unavailable", () => {
+  const dir = tmpProject({});
+  const r = sg(["fhe-metrics", "help"], dir, { PATH: "" });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /Go 1\.25\+ is required/);
 });
 
 test("help: bare invocation and --help both exit 0 with usage", () => {
@@ -175,7 +184,7 @@ test("check: every gate type round-trips through the CLI", () => {
       "    pattern: TODO",
       "  - id: command",
       "    type: command",
-      "    run: \"true\"",
+      "    run: node -e \"process.exit(0)\"",
       "  - id: evidence",
       "    type: evidence",
       "    file: notes.md",
@@ -223,6 +232,84 @@ test("check --json: failing run is machine-readable and exits 1", () => {
   const out = JSON.parse(r.stdout);
   assert.equal(out.passed, false);
   assert.equal(out.failed[0].id, "no-secrets");
+});
+
+test("check --cache reuses only the exact passing snapshot and --receipt writes evidence", () => {
+  const dir = tmpProject({
+    "README.md": "one\n",
+    ".skillgate/done.yaml": "gates:\n  - id: readme\n    type: file-exists\n    file: README.md\n",
+  });
+  const first = sg(["check", "--cache", "--json"], dir);
+  assert.equal(first.status, 0, first.stderr);
+  assert.equal(JSON.parse(first.stdout).cacheHit, false);
+  const second = sg(["check", "--cache", "--json"], dir);
+  assert.equal(second.status, 0, second.stderr);
+  assert.equal(JSON.parse(second.stdout).cacheHit, true);
+
+  const withReceipt = sg(["check", "--receipt", "gate-receipt.json", "--json"], dir);
+  assert.equal(withReceipt.status, 0, withReceipt.stderr);
+  const receipt = JSON.parse(fs.readFileSync(path.join(dir, "gate-receipt.json"), "utf8"));
+  assert.equal(receipt.result.passed, true);
+  assert.equal(receipt.source, "executed");
+});
+
+test("check finds the active worktree policy when invoked from a nested directory", () => {
+  const dir = tmpProject({
+    ".git/HEAD": "ref: refs/heads/main\n",
+    "README.md": "hi\n",
+    "packages/app/src/index.ts": "export {}\n",
+    ".skillgate/done.yaml": "gates:\n  - id: readme\n    type: file-exists\n    file: README.md\n",
+  });
+  const r = sg(["check"], path.join(dir, "packages", "app", "src"));
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /all 1 gates passed/);
+});
+
+test("check rejects unknown policy fields before evaluation", () => {
+  const dir = tmpProject({
+    ".skillgate/done.yaml": "gates:\n  - id: readme\n    type: file-exists\n    file: README.md\n    typo: true\n",
+  });
+  const r = sg(["check"], dir);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /unknown field.*typo/);
+});
+
+test("explain shows structural matches without executing gates", () => {
+  const dir = tmpProject({
+    ".skillgate/done.yaml": "finishLine: [git push]\ngates:\n  - id: missing\n    type: file-exists\n    file: NEVER\n",
+  });
+  const hit = sg(["explain", "--command", "env CI=1 git push origin main", "--json"], dir);
+  assert.equal(hit.status, 0, hit.stderr);
+  assert.equal(JSON.parse(hit.stdout).matched, true);
+  const miss = sg(["explain", "--command", "echo 'git push'", "--json"], dir);
+  assert.equal(JSON.parse(miss.stdout).matched, false);
+  const human = sg(["explain", "--command", "git push origin main"], dir);
+  assert.equal(human.status, 0);
+  assert.match(human.stdout, /MATCH/);
+  assert.match(human.stdout, /segment: git push origin main/);
+});
+
+test("integration and explain usage errors are explicit", () => {
+  const dir = tmpProject({});
+  assert.match(sg(["install"], dir).stderr, /integration target required/);
+  assert.match(sg(["doctor", "unknown"], dir).stderr, /unknown integration target/);
+  assert.match(sg(["explain"], dir).stderr, /requires --command/);
+  assert.match(sg(["explain", "--command", "git push"], dir).stderr, /no spec found/);
+});
+
+test("install and doctor expose idempotent integration wiring", () => {
+  const dir = tmpProject({
+    ".skillgate/done.yaml": "gates:\n  - id: readme\n    type: file-exists\n    file: README.md\n",
+    "README.md": "hi\n",
+  });
+  const install = sg(["install", "opencode"], dir);
+  assert.equal(install.status, 0, install.stderr);
+  assert.match(install.stdout, /registered Skillgate plugin/);
+  assert.equal(sg(["install", "opencode"], dir).status, 0);
+  const health = sg(["doctor", "opencode"], dir);
+  assert.equal(health.status, 0, health.stderr);
+  assert.match(health.stdout, /policy/);
+  assert.match(health.stdout, /opencode/);
 });
 
 test("audit: is read-only — never writes a spec into the audited repo", () => {

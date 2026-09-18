@@ -20,6 +20,10 @@ cp <skillgate>/contrib/claude-code/done.yaml .skillgate/done.yaml
 
 Then merge [`settings.json`](settings.json) from this directory into your `.claude/settings.json` (create the file if it doesn't exist). Start Claude Code and try to commit unfinished work — the commit is blocked until the gates pass.
 
+On Windows, copy `skillgate-hook.ps1` instead and merge `settings.windows.json`.
+The PowerShell hook resolves `npx.cmd` explicitly, forwards the original hook JSON
+on stdin, and fails closed with exit 2 when Node/npm cannot be found.
+
 ## What it does
 
 - Fires on every Bash tool call (`PreToolUse`).
@@ -33,7 +37,9 @@ Then merge [`settings.json`](settings.json) from this directory into your `.clau
 | File | Goes to | Purpose |
 |---|---|---|
 | `skillgate-hook.sh` | `.claude/skillgate-hook.sh` | the hook script |
+| `skillgate-hook.ps1` | `.claude/skillgate-hook.ps1` | native Windows PowerShell hook |
 | `settings.json` | merge into `.claude/settings.json` | registers the hook |
+| `settings.windows.json` | merge into `.claude/settings.json` | registers the PowerShell hook |
 | `done.yaml` | `.skillgate/done.yaml` | your definition of done |
 
 Edit `done.yaml` to match your project. The same file is reused verbatim by pre-commit, CI, and the opencode adapter — define done once, enforce it everywhere.

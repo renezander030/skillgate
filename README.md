@@ -149,6 +149,20 @@ Full walkthrough — mirror-to-GitHub, deploy keys, and the Docker / VM substrat
 
 > **Render, Railway, Heroku-style PaaS?** Not applicable, and worth saying why: skillgate is a gate on `git push`, not a hosted service. A PaaS builds *after* the code already reached GitHub, so it adds no boundary the agent has to cross. For a server-side guarantee, use the VPS path above, or CI + branch protection (public repos and paid GitHub plans).
 
+Wire an existing policy into a harness without hand-editing its config:
+
+```bash
+skillgate install claude-code
+skillgate install opencode
+skillgate install github-actions
+skillgate install pre-commit
+skillgate doctor claude-code       # validates policy discovery and hook registration
+```
+
+`install all` configures all four layers. Installation is idempotent, preserves
+existing Claude/OpenCode settings, refuses to overwrite unrelated workflows, and
+pins generated npm commands to the installed Skillgate version.
+
 ## Define your gates
 
 A gate is one deterministic, machine-checkable condition. Run `npx @reneza/skillgate init` to drop a starter `.skillgate/done.yaml` that includes drift detection and an evidence-gate example right out of the box, then run `skillgate scaffold` to generate the evidence file templates the agent must fill in:
@@ -167,7 +181,7 @@ The starter `done.yaml`:
 # Docs: https://github.com/renezander030/skillgate
 name: definition-of-done
 
-# Commands that count as crossing the finish line (substring match).
+# Commands that count as crossing the finish line (structural prefix match).
 finishLine:
   - "git commit"
   - "git push"
@@ -202,6 +216,33 @@ gates:
     target: "."
     severity: ["CRITICAL"]
 ```
+
+Finish-line patterns are matched against parsed shell command segments rather than
+raw text. Wrappers (`env`, `sudo`, `command`), Git/npm options, nested `sh -c` or
+PowerShell commands, pipelines, and `.cmd`/`.exe` launchers are normalized. Quoted
+prose such as `echo "git push"` does not trigger the gate. Preview a decision without
+running any gate:
+
+```bash
+skillgate explain --command "env CI=1 git -C repo push origin main"
+```
+
+Set a complete-run wall-clock budget with top-level `timeout: 120000`, or override
+it once with `skillgate check --timeout 120000`. Every configured gate remains in
+the result: gates that could not start before the budget expired are explicit
+blocking `not-run` entries. Command timeouts terminate the supervised process tree.
+
+For CI evidence and repeated local checks:
+
+```bash
+skillgate check --receipt .skillgate/evidence/gate-receipt.json
+skillgate check --cache --json
+```
+
+Receipts include the per-gate status, reason, duration, total budget, and workspace
+snapshot hash. `--cache` reuses passing results only when the parsed policy, runtime,
+base commit, and every tracked or untracked non-ignored workspace file have the same
+hash. Failures are never cached.
 
 A `file-contains` gate (e.g. require a touched changelog) and the other types are in the table below; [`examples/`](examples/) has fuller specs.
 
@@ -287,7 +328,7 @@ A `PreToolUse` deny on finish-line commands, calling the CLI:
     "PreToolUse": [
       {
         "matcher": "Bash",
-        "hooks": [{ "type": "command", "command": "npx @reneza/skillgate check --json >/dev/null || exit 2" }]
+        "hooks": [{ "type": "command", "command": "npx @reneza/skillgate gate" }]
       }
     ]
   }
@@ -297,6 +338,11 @@ A `PreToolUse` deny on finish-line commands, calling the CLI:
 ### pre-commit and CI — works for any agent or model
 
 These need no harness integration at all, which makes them the universal backstop. See [`contrib/`](contrib/) for a ready [pre-commit hook](contrib/pre-commit-config.yaml) and [GitHub Action](contrib/github-action.yml). Pair the Action with branch protection and a required status check: that layer lives server-side, outside any agent's reach.
+
+Native Windows hook files are included in [`contrib/claude-code`](contrib/claude-code/):
+the PowerShell adapter resolves `npx.cmd`, preserves the hook payload on stdin, and
+uses the same exit-code contract as the POSIX hook. The CLI test suite also runs on
+Windows in CI.
 
 > **Private repo, Free account?** GitHub doesn't enforce branch protection on private repos under a Free personal plan — so the only *hard* layer above is unavailable. Get the same guarantee for free by running the evaluator somewhere the agent can't reach: a self-hosted server-side `pre-receive` gate on a [VM, a Docker container, or a small remote VPS](contrib/self-hosted-gate/). `git push --no-verify` can't skip a server hook, and the definition of done lives on a box the agent can't log into. Pick the substrate by how well your agent is already sandboxed — see [`contrib/self-hosted-gate`](contrib/self-hosted-gate/).
 

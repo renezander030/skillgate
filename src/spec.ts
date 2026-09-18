@@ -137,13 +137,15 @@ export interface Spec {
   /**
    * Spec format version. Optional and backward-compatible: an omitted version is
    * treated as the current format. Bump only on a breaking change to the schema;
-   * skillgate warns (it does not refuse) when a spec declares a version newer than
-   * it understands, so an older CLI degrades loudly rather than silently.
+   * skillgate fails closed when a spec declares a newer version, so an older CLI
+   * cannot silently skip enforcement it does not understand.
    */
   version?: number;
   name?: string;
-  /** Commands that count as crossing the finish line (substring match). */
+  /** Commands that count as crossing the finish line (structural shell matching). */
   finishLine?: string[];
+  /** Maximum wall-clock budget for one complete gate run. */
+  timeout?: number;
   gates: Gate[];
 }
 
@@ -156,6 +158,9 @@ export const DEFAULT_NOT_EMPTY_MIN = 1;
 /** Default timeout for command gates (30 seconds). */
 export const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 
+/** Default wall-clock budget for a complete run (5 minutes). */
+export const DEFAULT_RUN_TIMEOUT_MS = 300_000;
+
 export const DEFAULT_SPEC_PATHS = [
   ".skillgate/done.yaml",
   ".skillgate/done.yml",
@@ -164,13 +169,173 @@ export const DEFAULT_SPEC_PATHS = [
   ".skillgate.json",
 ];
 
-/** Find the first default spec file present under `dir`, or null. */
+/** Workspace root implied by a spec path. */
+export function specRoot(specPath: string): string {
+  const parent = path.dirname(specPath);
+  return path.basename(parent) === ".skillgate" ? path.dirname(parent) : parent;
+}
+
+/**
+ * Find the nearest policy from `dir` upward. Discovery stops at the current Git
+ * worktree root, so a nested checkout can never inherit policy from its parent.
+ */
 export function findSpecPath(dir: string): string | null {
-  for (const p of DEFAULT_SPEC_PATHS) {
-    const full = path.join(dir, p);
-    if (fs.existsSync(full)) return full;
+  let current = path.resolve(dir);
+  try {
+    if (fs.statSync(current).isFile()) current = path.dirname(current);
+  } catch {
+    return null;
   }
-  return null;
+  while (true) {
+    for (const p of DEFAULT_SPEC_PATHS) {
+      const full = path.join(current, p);
+      if (fs.existsSync(full)) return full;
+    }
+    const parent = path.dirname(current);
+    if (fs.existsSync(path.join(current, ".git")) || parent === current) return null;
+    current = parent;
+  }
+}
+
+type UnknownRecord = Record<string, unknown>;
+
+function asRecord(value: unknown, where: string): UnknownRecord {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${where} must be an object`);
+  return value as UnknownRecord;
+}
+
+function noUnknown(value: UnknownRecord, allowed: string[], where: string): void {
+  const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
+  if (unknown.length) throw new Error(`${where} has unknown field${unknown.length > 1 ? "s" : ""}: ${unknown.join(", ")}`);
+}
+
+function nonEmptyString(value: unknown, where: string): asserts value is string {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${where} must be a non-empty string`);
+}
+
+function stringArray(value: unknown, where: string, allowEmpty = false): asserts value is string[] {
+  if (!Array.isArray(value) || (!allowEmpty && value.length === 0) || value.some((item) => typeof item !== "string" || !item.trim())) {
+    throw new Error(`${where} must be ${allowEmpty ? "an" : "a non-empty"} array of strings`);
+  }
+}
+
+function positiveInteger(value: unknown, where: string): asserts value is number {
+  if (!Number.isInteger(value) || Number(value) < 1) throw new Error(`${where} must be a positive integer`);
+}
+
+function optionalString(value: unknown, where: string): void {
+  if (value != null && typeof value !== "string") throw new Error(`${where} must be a string`);
+}
+
+function optionalNonEmptyString(value: unknown, where: string): void {
+  if (value != null) nonEmptyString(value, where);
+}
+
+function optionalStringArray(value: unknown, where: string): void {
+  if (value != null) stringArray(value, where, true);
+}
+
+function validateRegex(pattern: unknown, flags: unknown, where: string): void {
+  nonEmptyString(pattern, `${where}.pattern`);
+  optionalString(flags, `${where}.flags`);
+  try {
+    new RegExp(pattern, typeof flags === "string" ? flags : "");
+  } catch (error: any) {
+    throw new Error(`${where} has invalid regex: ${error.message}`);
+  }
+}
+
+function validateGate(value: unknown, index: number): void {
+  const where = `gates[${index}]`;
+  const gate = asRecord(value, where);
+  nonEmptyString(gate.id, `${where}.id`);
+  nonEmptyString(gate.type, `${where}.type`);
+  optionalString(gate.description, `${where}.description`);
+  const base = ["id", "type", "description"];
+  const allow = (...fields: string[]) => noUnknown(gate, [...base, ...fields], where);
+  const timeout = () => { if (gate.timeout != null) positiveInteger(gate.timeout, `${where}.timeout`); };
+  switch (gate.type) {
+    case "file-exists":
+      allow("file");
+      if (typeof gate.file !== "string") stringArray(gate.file, `${where}.file`);
+      else nonEmptyString(gate.file, `${where}.file`);
+      break;
+    case "file-contains":
+      allow("file", "pattern", "flags");
+      nonEmptyString(gate.file, `${where}.file`);
+      validateRegex(gate.pattern, gate.flags, where);
+      break;
+    case "absent":
+    case "no-new":
+      allow("glob", "pattern", "flags", "ignore");
+      nonEmptyString(gate.glob, `${where}.glob`);
+      validateRegex(gate.pattern, gate.flags, where);
+      optionalStringArray(gate.ignore, `${where}.ignore`);
+      break;
+    case "command":
+      allow("run", "timeout");
+      nonEmptyString(gate.run, `${where}.run`);
+      timeout();
+      break;
+    case "trivy": {
+      allow("target", "trivy", "scanners", "severity", "sbom", "ignoreUnfixed", "timeout");
+      optionalNonEmptyString(gate.target, `${where}.target`);
+      optionalNonEmptyString(gate.trivy, `${where}.trivy`);
+      if (gate.scanners != null) {
+        stringArray(gate.scanners, `${where}.scanners`);
+        if (gate.scanners.some((item) => !["vuln", "secret"].includes(item))) throw new Error(`${where}.scanners contains an unsupported scanner`);
+      }
+      if (gate.severity != null) {
+        stringArray(gate.severity, `${where}.severity`);
+        if (gate.severity.some((item) => !["UNKNOWN", "LOW", "MEDIUM", "HIGH", "CRITICAL"].includes(item))) {
+          throw new Error(`${where}.severity contains an unsupported severity`);
+        }
+      }
+      for (const field of ["sbom", "ignoreUnfixed"]) {
+        if (gate[field] != null && typeof gate[field] !== "boolean") throw new Error(`${where}.${field} must be a boolean`);
+      }
+      timeout();
+      break;
+    }
+    case "evidence":
+      allow("file");
+      nonEmptyString(gate.file, `${where}.file`);
+      break;
+    case "instruction-sync":
+      allow("threshold");
+      if (gate.threshold != null && (typeof gate.threshold !== "number" || !Number.isFinite(gate.threshold) || gate.threshold < 0 || gate.threshold > 1)) {
+        throw new Error(`${where}.threshold must be between 0 and 1`);
+      }
+      break;
+    case "not-empty":
+      allow("path", "min");
+      nonEmptyString(gate.path, `${where}.path`);
+      if (gate.min != null) positiveInteger(gate.min, `${where}.min`);
+      break;
+    case "no-deleted":
+      allow("glob", "ignore");
+      nonEmptyString(gate.glob, `${where}.glob`);
+      optionalStringArray(gate.ignore, `${where}.ignore`);
+      break;
+    default:
+      throw new Error(`${where}.type is unsupported: ${gate.type}`);
+  }
+}
+
+function validateSpec(value: unknown): asserts value is Spec {
+  const spec = asRecord(value, "spec");
+  noUnknown(spec, ["version", "name", "finishLine", "timeout", "gates"], "spec");
+  if (spec.version != null && (!Number.isInteger(spec.version) || Number(spec.version) < 1)) {
+    throw new Error(`spec.version must be a positive integer`);
+  }
+  optionalString(spec.name, "spec.name");
+  if (spec.finishLine != null) stringArray(spec.finishLine, "spec.finishLine", true);
+  if (spec.timeout != null) positiveInteger(spec.timeout, "spec.timeout");
+  if (!Array.isArray(spec.gates) || spec.gates.length === 0) throw new Error(`spec.gates must be a non-empty array`);
+  spec.gates.forEach(validateGate);
+  const ids = spec.gates.map((gate: any) => gate.id);
+  const duplicate = ids.find((id, index) => ids.indexOf(id) !== index);
+  if (duplicate) throw new Error(`spec.gates contains duplicate id: ${duplicate}`);
 }
 
 /**
@@ -179,21 +344,17 @@ export function findSpecPath(dir: string): string | null {
  * validation. `label` names the source in errors (a path, or `<ref>:<path>`).
  */
 export function parseSpec(raw: string, label: string, isJson: boolean): Spec {
-  const data = isJson ? JSON.parse(raw) : parseYaml(raw);
-  if (!data || !Array.isArray(data.gates)) {
-    throw new Error(`invalid spec ${label}: missing "gates" array`);
-  }
-  if (data.version != null) {
-    if (typeof data.version !== "number" || !Number.isInteger(data.version)) {
-      throw new Error(`invalid spec ${label}: "version" must be an integer`);
+  let data: unknown;
+  try {
+    data = isJson ? JSON.parse(raw) : parseYaml(raw);
+    validateSpec(data);
+    if (data.version != null && data.version > SPEC_VERSION) {
+      throw new Error(`spec.version ${data.version} is newer than supported version ${SPEC_VERSION}; upgrade skillgate`);
     }
-    if (data.version > SPEC_VERSION) {
-      console.warn(
-        `skillgate: spec ${label} declares version ${data.version} but this build understands up to ${SPEC_VERSION} — upgrade skillgate; some gates may be misread`,
-      );
-    }
+  } catch (error: any) {
+    throw new Error(`invalid spec ${label}: ${error.message}`);
   }
-  return data as Spec;
+  return data;
 }
 
 export function loadSpec(specPath: string): Spec {

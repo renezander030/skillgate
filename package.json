@@ -1,6 +1,6 @@
 {
   "name": "@reneza/skillgate",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "publishConfig": {
     "access": "public"
   },
@@ -29,7 +29,7 @@
     "pretest": "npm run build",
     "test": "node --test dist/test/*.test.js",
     "pretest:coverage": "npm run build",
-    "test:coverage": "node --test --experimental-test-coverage --test-coverage-lines=85 --test-coverage-branches=70 --test-coverage-functions=90 dist/test/*.test.js"
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include=dist/src/**/*.js --test-coverage-lines=85 --test-coverage-branches=70 --test-coverage-functions=90 dist/test/*.test.js"
   },
   "engines": {
     "node": ">=18"

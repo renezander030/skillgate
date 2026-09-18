@@ -10,6 +10,7 @@
     "version": {
       "type": "integer",
       "minimum": 1,
+      "maximum": 1,
       "description": "Spec format version. Omit for the current format."
     },
     "name": {
@@ -18,8 +19,13 @@
     },
     "finishLine": {
       "type": "array",
-      "description": "Commands that count as crossing the finish line (substring match).",
-      "items": { "type": "string" }
+      "description": "Commands that count as crossing the finish line. Patterns are matched structurally against shell command segments.",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "timeout": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Maximum wall-clock budget in milliseconds for the complete gate run. Default 300000."
     },
     "gates": {
       "type": "array",
