@@ -1,0 +1,14 @@
+{
+  "name": "skillgate",
+  "owner": {
+    "name": "René Zander"
+  },
+  "description": "Deterministic finish-line gates for AI coding agents (skillgate plugin).",
+  "plugins": [
+    {
+      "name": "skillgate",
+      "source": "./",
+      "description": "Define done once in .skillgate/done.yaml and block commit, push and publish until it passes — fail-closed PreToolUse hook, network-off patch verification, evidence gates, and instruction-drift sync."
+    }
+  ]
+}

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+- A `skillgate` agent skill and Claude Code plugin manifest, so the CLI installs into an
+  agent in one command (`npx skills add renezander030/skillgate`, or
+  `/plugin marketplace add renezander030/skillgate`). The skill covers the audit-first
+  order, `install`/`doctor` wiring, `check` before reporting work finished, `verify-patch`,
+  the gate types, and the rule that a blocking gate is fixed rather than bypassed.
+
 ## 0.9.0 - 2026-09-18
 
 ### Added

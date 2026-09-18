@@ -1,0 +1,25 @@
+{
+  "name": "skillgate",
+  "version": "0.1.0",
+  "description": "Deterministic finish-line gates for AI coding agents — define done once in .skillgate/done.yaml, then block commit, push and publish until it passes. Wires a fail-closed PreToolUse hook, evaluates agent patches in a network-off clone, and keeps CLAUDE.md/AGENTS.md from drifting apart.",
+  "author": {
+    "name": "René Zander",
+    "url": "https://github.com/renezander030"
+  },
+  "homepage": "https://github.com/renezander030/skillgate",
+  "repository": "https://github.com/renezander030/skillgate",
+  "license": "MIT",
+  "keywords": [
+    "definition-of-done",
+    "gates",
+    "pre-commit",
+    "ci",
+    "agent-reliability",
+    "code-review",
+    "instruction-drift",
+    "verify-patch",
+    "agent-skill",
+    "claude-code-plugin"
+  ],
+  "skills": "./skills/"
+}
