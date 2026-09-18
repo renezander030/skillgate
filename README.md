@@ -303,6 +303,23 @@ canonical: AGENTS.md
 
 ## Wire it into your agent
 
+### One command for your agent
+
+The [`skills`](https://skills.sh) installer drops the `skillgate` skill into Claude Code, Codex, Cursor, OpenCode and the other agents it supports:
+
+```bash
+npx skills add renezander030/skillgate
+```
+
+Claude Code can also load it as a plugin:
+
+```
+/plugin marketplace add renezander030/skillgate
+/plugin install skillgate@skillgate
+```
+
+The skill teaches the agent to audit before it changes anything, to run `check` before it reports work finished, and the rule that decides whether any of this is worth having: a gate that blocks gets fixed, never bypassed. Wiring is `skillgate install claude-code`, which writes the hook shown below for you.
+
 ### opencode
 
 opencode has no blocking session-end hook, so enforcement lives where it can actually stop the agent: `tool.execute.before`. The plugin denies finish-line commands until the gates pass. Add it to your config:
