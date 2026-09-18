@@ -2,7 +2,7 @@
 # Docs: https://github.com/renezander030/skillgate
 name: definition-of-done
 
-# Commands that count as crossing the finish line (substring match).
+# Commands that count as crossing the finish line (structural prefix match).
 finishLine:
   - "git commit"
   - "git push"

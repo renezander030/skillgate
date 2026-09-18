@@ -58,8 +58,8 @@ test("absent: passes when clean", () => {
 
 test("command: pass on exit 0, fail on nonzero", () => {
   const dir = tmpProject({});
-  assert.equal(runGates({ gates: [{ id: "ok", type: "command", run: "true" }] }, dir).passed, true);
-  assert.equal(runGates({ gates: [{ id: "bad", type: "command", run: "false" }] }, dir).passed, false);
+  assert.equal(runGates({ gates: [{ id: "ok", type: "command", run: 'node -e "process.exit(0)"' }] }, dir).passed, true);
+  assert.equal(runGates({ gates: [{ id: "bad", type: "command", run: 'node -e "process.exit(1)"' }] }, dir).passed, false);
 });
 
 test("command: timeout kills a hanging command", () => {
@@ -71,7 +71,23 @@ test("command: timeout kills a hanging command", () => {
   assert.equal(gate.reason, "command timed out after 100ms");
 });
 
-test("trivy: runs secret, critical vuln, and sbom checks", () => {
+test("run timeout accounts for every configured gate and marks the rest not-run", () => {
+  const dir = tmpProject({});
+  const r = runGates({
+    timeout: 80,
+    gates: [
+      { id: "hang", type: "command", run: 'node -e "setTimeout(()=>{},10000)"' },
+      { id: "after", type: "command", run: 'node -e "process.exit(0)"' },
+    ],
+  }, dir);
+  assert.equal(r.passed, false);
+  assert.equal(r.results.length, 2);
+  assert.match(r.results[0].reason, /timed out/);
+  assert.equal(r.results[1].status, "not-run");
+  assert.match(r.results[1].reason, /overall timeout exhausted/);
+});
+
+test("trivy: runs secret, critical vuln, and sbom checks", { skip: process.platform === "win32" }, () => {
   const dir = tmpProject({});
   const trivy = path.join(dir, "fake-trivy.sh");
   fs.writeFileSync(
@@ -95,7 +111,7 @@ exit 0
   assert.match(invocations, /fs --format cyclonedx --no-progress \./);
 });
 
-test("trivy: blocks leaked secrets without applying CVE severity filtering", () => {
+test("trivy: blocks leaked secrets without applying CVE severity filtering", { skip: process.platform === "win32" }, () => {
   const dir = tmpProject({});
   const trivy = path.join(dir, "fake-trivy.sh");
   fs.writeFileSync(
@@ -118,7 +134,7 @@ exit 0
   assert.match(r.failed[0].reason, /SECRET_KEY leaked/);
 });
 
-test("trivy: supports custom vulnerability severity and skipping sbom", () => {
+test("trivy: supports custom vulnerability severity and skipping sbom", { skip: process.platform === "win32" }, () => {
   const dir = tmpProject({});
   const trivy = path.join(dir, "fake-trivy.sh");
   fs.writeFileSync(
@@ -194,7 +210,7 @@ test("not-empty: respects min option", () => {
   assert.equal(r2.passed, true);
 });
 
-test("isFinishLine: substring match against patterns", () => {
+test("isFinishLine: structural match against patterns", () => {
   assert.equal(isFinishLine("git commit -m x", ["git commit", "git push"]), true);
   assert.equal(isFinishLine("ls -la", ["git commit"]), false);
   assert.equal(isFinishLine("anything", undefined), false);

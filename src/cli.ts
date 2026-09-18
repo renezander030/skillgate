@@ -4,12 +4,15 @@ import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { findSpecPath, loadSpec, parseSpec, DEFAULT_SPEC_PATHS, type Spec } from "./spec.js";
+import { findSpecPath, loadSpec, parseSpec, specRoot, DEFAULT_SPEC_PATHS, type Spec } from "./spec.js";
 import { runGates, decideCommand } from "./core.js";
 import { checkDrift, formatDiff, DEFAULT_THRESHOLD, discover, pickCanonical } from "./drift.js";
 import { runSync } from "./link.js";
 import { runScaffold, listTemplates } from "./scaffold.js";
-import { resolveBaseRef, mergeBase, readFileAtRef, repoRoot } from "./git.js";
+import { doctor, installIntegration, INTEGRATION_TARGETS, type IntegrationTarget } from "./integrations.js";
+import { analyzeCommand } from "./command.js";
+import { readCachedResult, snapshotKey, writeCachedResult, writeReceipt } from "./receipt.js";
+import { resolveBaseRef, mergeBase, readFileAtRef, repoRelativePath, repoRoot } from "./git.js";
 import {
   createPrivatePassProof,
   generateKeyFiles,
@@ -35,7 +38,7 @@ const EXAMPLE = `# yaml-language-server: $schema=https://raw.githubusercontent.c
 # Docs: https://github.com/renezander030/skillgate
 name: definition-of-done
 
-# Commands that count as crossing the finish line (substring match).
+# Commands that count as crossing the finish line (structural prefix match).
 finishLine:
   - "git commit"
   - "git push"
@@ -89,6 +92,9 @@ Usage:
   skillgate fhe-metrics              add private repo counts while they stay encrypted
   skillgate gate                     allow/block one command (any harness); exit 2 = block
   skillgate init                     write an example .skillgate/done.yaml
+  skillgate install <target|all>     install Claude, OpenCode, CI, or pre-commit enforcement
+  skillgate doctor <target|all>      verify policy discovery and one or more integrations
+  skillgate explain --command <cmd>  show structural finish-line matching without running gates
   skillgate scaffold [--template]    generate .skillgate/evidence/ with stack templates
   skillgate drift                    report AI instruction-file drift, exit 1 if drifted
   skillgate diff-instructions        show line-level diff between drifted instruction files
@@ -104,6 +110,9 @@ Flags:
   --base <ref>             ref for diff-aware gates (no-new, no-deleted) and, with
                            --pin, the pinned spec. Default: SKILLGATE_BASE or origin/HEAD
   --command "<cmd>"        gate: the command to judge (else read from stdin)
+  --timeout <ms>           check: cap the complete gate run (overrides spec timeout)
+  --cache                  check: reuse a passing result only for the exact repo snapshot
+  --receipt <file>         check: write a machine-readable execution receipt
   --allow-on-error         gate: allow instead of fail-closed if evaluation errors
   --threshold <0..1>       drift: similarity required to count as in sync (default 0.95)
   --dry-run                sync: show what would change without writing
@@ -214,6 +223,8 @@ function die(code: number, msg: string): never {
 
 interface Resolved {
   spec: Spec;
+  /** Workspace the policy is rooted in (the active worktree, not its parent checkout). */
+  workspace: string;
   /** merge-base ref diff-aware gates compare against, if one could be resolved. */
   gateBase?: string;
   /** ref the spec itself was pinned to (only set in --pin mode). */
@@ -228,27 +239,28 @@ interface Resolved {
  * and anything that prevents that (no base, no pinned spec) fails closed.
  */
 function resolveSpecAndBase(specPathHint: string | null): Resolved {
-  const rawBase = resolveBaseRef(cwd, baseArg);
-  const gateBase = rawBase ? mergeBase(cwd, rawBase) : undefined;
+  const workspace = specPathHint ? specRoot(specPathHint) : (repoRoot(cwd) ?? cwd);
+  const rawBase = resolveBaseRef(workspace, baseArg);
+  const gateBase = rawBase ? mergeBase(workspace, rawBase) : undefined;
 
   if (!pin) {
     if (!specPathHint) die(2, "no spec found — run `skillgate init` or pass a path");
-    return { spec: loadSpec(specPathHint), gateBase };
+    return { spec: loadSpec(specPathHint), workspace, gateBase };
   }
 
   if (!rawBase) {
     die(2, "--pin: cannot resolve a base ref (set SKILLGATE_BASE or pass --base <ref>) — refusing to run unpinned (fail-closed)");
   }
-  const root = repoRoot(cwd);
+  const root = repoRoot(workspace);
   if (!root) die(2, "--pin: not a git repository (fail-closed)");
-  const rels = specPathHint
-    ? [path.relative(root, specPathHint).split(path.sep).join("/")]
-    : DEFAULT_SPEC_PATHS;
+  const pinnedRel = specPathHint ? repoRelativePath(workspace, specPathHint) : null;
+  if (specPathHint && !pinnedRel) die(2, "--pin: spec is outside the active Git worktree (fail-closed)");
+  const rels = pinnedRel ? [pinnedRel] : DEFAULT_SPEC_PATHS;
   for (const rel of rels) {
-    const raw = readFileAtRef(cwd, gateBase!, rel);
+    const raw = readFileAtRef(workspace, gateBase!, rel);
     if (raw != null) {
       const label = `${gateBase!.slice(0, 12)}:${rel}`;
-      return { spec: parseSpec(raw, label, rel.endsWith(".json")), gateBase, pinnedTo: gateBase };
+      return { spec: parseSpec(raw, label, rel.endsWith(".json")), workspace, gateBase, pinnedTo: gateBase };
     }
   }
   return die(2, `--pin: no committed spec at ${gateBase!.slice(0, 12)} (looked for ${rels.join(", ")}) — commit your .skillgate/done.yaml to the base branch first (fail-closed)`);
@@ -334,14 +346,14 @@ if (cmd === "zk-prove") {
   if (!challenge) die(2, "zk-prove requires a verifier-provided --challenge");
   try {
     const resolved = resolvedZKSpec();
-    const result = runGates(resolved.spec, cwd, { baseRef: resolved.gateBase });
+    const result = runGates(resolved.spec, resolved.workspace, { baseRef: resolved.gateBase });
     if (!result.passed) {
       console.error(c(C.red, `✗ no proof: ${result.failed.length} of ${result.results.length} gates failed`));
       for (const failure of result.failed) console.error(c(C.dim, `    · ${failure.id}: ${failure.reason}`));
       process.exit(1);
     }
     const key = loadPrivateKey(privateFile);
-    const proof = await createPrivatePassProof(resolved.spec, result, cwd, key, challenge);
+    const proof = await createPrivatePassProof(resolved.spec, result, resolved.workspace, key, challenge);
     fs.writeFileSync(outputFile, JSON.stringify(proof, null, 2) + "\n", { encoding: "utf8", mode: 0o600, flag: "wx" });
     console.log(c(C.green, `✓ private pass proof created: ${outputFile}`));
     console.log(`  ${proof.proof_bytes} bytes in ${proof.prover_ms} ms; repo snapshot, gate details, reasons, and counts stayed private`);
@@ -384,6 +396,57 @@ if (cmd === "init") {
   process.exit(0);
 }
 
+function integrationTargets(value: string | undefined): IntegrationTarget[] {
+  if (!value) die(2, `integration target required (${INTEGRATION_TARGETS.join(", ")}, or all)`);
+  if (value === "all") return [...INTEGRATION_TARGETS];
+  if (!(INTEGRATION_TARGETS as readonly string[]).includes(value)) {
+    die(2, `unknown integration target: ${value} (${INTEGRATION_TARGETS.join(", ")}, or all)`);
+  }
+  return [value as IntegrationTarget];
+}
+
+if (cmd === "install") {
+  const targets = integrationTargets(args[1]);
+  try {
+    for (const target of targets) {
+      const result = installIntegration(target, cwd);
+      console.log(`${result.changed ? c(C.green, "✓") : c(C.dim, "·")} ${target}  ${result.detail} (${path.relative(cwd, result.file)})`);
+    }
+    process.exit(0);
+  } catch (error: any) {
+    die(2, error.message);
+  }
+}
+
+if (cmd === "doctor") {
+  const targets = integrationTargets(args[1]);
+  const checks = doctor(cwd, targets);
+  for (const check of checks) console.log(`${check.ok ? c(C.green, "✓") : c(C.red, "✗")} ${check.id}  ${c(C.dim, check.detail)}`);
+  process.exit(checks.every((check) => check.ok) ? 0 : 1);
+}
+
+if (cmd === "explain") {
+  const command = option("--command") ?? "";
+  if (!command) die(2, "explain requires --command <cmd>");
+  const specPath = findSpecPath(cwd);
+  if (!specPath) die(2, "no spec found — run `skillgate init`");
+  try {
+    const spec = loadSpec(specPath);
+    const analysis = analyzeCommand(command, spec.finishLine ?? []);
+    if (json) {
+      console.log(JSON.stringify({ command, finishLine: spec.finishLine ?? [], ...analysis }, null, 2));
+    } else {
+      console.log(`${analysis.matched ? c(C.red, "MATCH") : c(C.green, "NO MATCH")} · ${command}`);
+      console.log(`  policy: ${path.relative(cwd, specPath)}`);
+      console.log(`  matched: ${analysis.patterns.length ? analysis.patterns.join(", ") : "none"}`);
+      for (const segment of analysis.segments) console.log(`  segment: ${segment.normalized.join(" ") || "(empty)"}`);
+    }
+    process.exit(0);
+  } catch (error: any) {
+    die(2, error.message);
+  }
+}
+
 if (cmd === "audit") {
   // Zero-config, read-only: see what your agent could cut in this repo right now.
   // If there's no spec we evaluate against the built-in defaults WITHOUT writing
@@ -399,7 +462,7 @@ if (cmd === "audit") {
 
   let result;
   try {
-    result = runGates(loadSpec(specPath), cwd);
+    result = runGates(loadSpec(specPath), usingDefaults ? cwd : specRoot(specPath));
   } catch (e: any) {
     console.error(c(C.red, `skillgate: ${e.message}`));
     process.exit(2);
@@ -450,23 +513,43 @@ if (cmd === "check") {
 
   let result;
   let pinnedTo: string | undefined;
+  let cacheHit = false;
+  let snapshot: string | undefined;
   try {
     const r = resolveSpecAndBase(specPath && fs.existsSync(specPath) ? specPath : null);
     pinnedTo = r.pinnedTo;
-    result = runGates(r.spec, cwd, { baseRef: r.gateBase });
+    const timeoutArg = option("--timeout");
+    const timeoutMs = timeoutArg == null ? undefined : Number(timeoutArg);
+    if (timeoutArg != null && (!Number.isInteger(timeoutMs) || timeoutMs! < 1)) die(2, "--timeout must be a positive integer in milliseconds");
+    const cache = args.includes("--cache");
+    const receipt = option("--receipt");
+    const receiptFile = receipt ? path.resolve(cwd, receipt) : undefined;
+    const receiptRel = receiptFile ? path.relative(r.workspace, receiptFile).split(path.sep).join("/") : "";
+    const snapshotIgnore = receiptRel && !receiptRel.startsWith("../") ? [receiptRel] : [];
+    if (cache || receipt) snapshot = snapshotKey({ ...r.spec, timeout: timeoutMs ?? r.spec.timeout }, r.workspace, r.gateBase, snapshotIgnore);
+    const cached = cache && snapshot ? readCachedResult(r.workspace, snapshot) : null;
+    if (cached) {
+      result = cached;
+      cacheHit = true;
+    } else {
+      result = runGates(r.spec, r.workspace, { baseRef: r.gateBase, timeoutMs });
+      if (cache && snapshot) writeCachedResult(r.workspace, snapshot, result);
+    }
+    if (receiptFile && snapshot) writeReceipt(receiptFile, snapshot, result, cacheHit ? "cache" : "executed");
   } catch (e: any) {
     console.error(c(C.red, `skillgate: ${e.message}`));
     process.exit(2);
   }
 
   if (json) {
-    console.log(JSON.stringify({ ...result, pinnedTo }, null, 2));
+    console.log(JSON.stringify({ ...result, pinnedTo, cacheHit, snapshot }, null, 2));
     process.exit(result.passed ? 0 : 1);
   }
 
   if (pinnedTo) {
     console.log(c(C.dim, `  policy pinned to ${pinnedTo.slice(0, 12)} (base ref) — this change cannot loosen it`));
   }
+  if (cacheHit) console.log(c(C.dim, "  exact snapshot cache hit — reused prior passing receipt"));
   for (const r of result.results) {
     const mark = r.ok ? c(C.green, "✓") : c(C.red, "✗");
     console.log(`  ${mark} ${r.id}  ${c(C.dim, r.reason)}`);
@@ -615,7 +698,7 @@ if (cmd === "gate") {
 
   try {
     const r = resolveSpecAndBase(specPath && fs.existsSync(specPath) ? specPath : null);
-    const decision = decideCommand(r.spec, cwd, command, { baseRef: r.gateBase });
+    const decision = decideCommand(r.spec, r.workspace, command, { baseRef: r.gateBase });
     if (json) {
       console.log(JSON.stringify({ ...decision, pinnedTo: r.pinnedTo }, null, 2));
     } else if (decision.decision === "block") {

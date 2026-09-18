@@ -2,8 +2,41 @@
 
 ## Unreleased
 
+## 0.9.0 - 2026-09-18
+
+### Added
+- `skillgate install <claude-code|opencode|github-actions|pre-commit|all>` and
+  `skillgate doctor <target|all>` for idempotent hook setup and policy/integration
+  health checks. Generated npm commands are pinned to the installed Skillgate version.
+- `skillgate explain --command <cmd>` to inspect parsed shell segments and the exact
+  finish-line pattern match without running gates.
+- `skillgate check --receipt <file>` for versioned JSON execution receipts and
+  `--cache` for exact-snapshot reuse of passing results. Failed runs are never cached.
+- A native Claude Code PowerShell hook and a Windows CI job covering the supported CLI.
+- Top-level `timeout` and `check --timeout <ms>` budgets for a complete gate run.
+  Timed-out commands are supervised as process trees, and gates that cannot start are
+  explicit blocking `not-run` results.
+
 ### Changed
+- Policy loading now rejects unknown fields, unsupported gate types, duplicate IDs,
+  invalid regexes, invalid option values, and newer unsupported spec versions before
+  evaluation. A configured invalid policy fails closed in the OpenCode hook.
+- Finish-line detection parses command segments, wrappers, options, nested shells,
+  PowerShell commands, pipelines, and Windows executable suffixes. Quoted prose and
+  unrelated subcommands no longer trigger a match.
+- Policy discovery walks upward to the active Git worktree boundary and evaluates all
+  relative paths from the policy-owning workspace.
+- Coverage thresholds are scoped to shipped source files, so gate commands spawned by
+  tests cannot dilute the report with package-manager internals.
 - Lead the README with the existing commit-gate demo and one-command audit, followed by a link to the maintainer's GitHub profile.
+
+### Breaking
+- `finishLine` entries are command prefixes rather than arbitrary substrings. Existing
+  entries such as `git commit`, `git push`, and `npm publish` continue to work. Replace
+  partial-word patterns with the full executable and subcommand, and use
+  `skillgate explain --command <cmd>` to verify migrations.
+- Policies with unknown fields or invalid values that older builds ignored now fail
+  validation before any gate runs.
 
 ## 0.8.0 - 2026-09-06
 

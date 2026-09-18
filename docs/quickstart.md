@@ -47,3 +47,13 @@ hook, pre-commit, CI, or a retry loop. All of them enforce the *same*
 
 `--json` is available on `check`, `audit`, and `drift` for machine-readable output;
 the exit code is unchanged.
+After creating `.skillgate/done.yaml`, wire it into the layer you use and verify
+the result:
+
+```bash
+skillgate install claude-code       # or opencode, github-actions, pre-commit, all
+skillgate doctor claude-code
+```
+
+Run from any directory inside the active Git worktree; Skillgate resolves the
+nearest policy and evaluates paths from that worktree root.

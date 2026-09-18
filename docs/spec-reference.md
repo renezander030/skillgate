@@ -10,9 +10,22 @@ A spec is a YAML (or JSON) file. skillgate looks for it at, in order:
 | Field | Type | Required | Meaning |
 |-------|------|----------|---------|
 | `gates` | array | yes | The deterministic checks. Order is preserved in output. |
-| `finishLine` | string[] | no | Commands that count as crossing the finish line (substring match). Used by the agent integrations. |
+| `finishLine` | string[] | no | Command prefixes that cross the finish line, matched structurally by agent integrations. |
 | `name` | string | no | A label for this definition of done. |
 | `version` | integer | no | Spec format version. Omit for the current format. See [compatibility](compatibility.md). |
+| `timeout` | positive integer | no | Total wall-clock budget for one run in milliseconds. Defaults to 300000. |
+
+`finishLine` uses structural shell matching. Each unquoted command segment is
+tokenized, common wrappers and executable suffixes are normalized, and the command
+prefix is compared with the configured pattern. This catches `env CI=1 git push`,
+`git -C repo commit`, nested `sh -c`/PowerShell commands, and Windows `.cmd`
+launchers without matching quoted prose. Run `skillgate explain --command "..."`
+to inspect the decision without executing gates.
+
+Runtime loading enforces the same closed shape as the JSON Schema: unknown fields,
+unsupported gate types, duplicate IDs, invalid regexes, invalid option values, and
+empty gate lists are rejected before any gate runs. A configured but invalid policy
+blocks agent hooks rather than being ignored.
 
 ## Gate types
 
@@ -170,3 +183,18 @@ AGENTS.md (or CLAUDE.md if AGENTS.md is absent) that tell the agent to:
 Every gate is a pure function over the filesystem: same inputs, same verdict, in
 milliseconds, with no model in the loop. A `command` gate inherits the determinism of
 the command you give it — keep them hermetic.
+
+Policy discovery starts in the requested directory and walks upward only to the
+current Git worktree root. Gates run relative to the directory that owns the policy,
+so calling `skillgate check` from a nested package cannot accidentally use paths from
+the main checkout or a parent repository.
+
+The run budget applies across all gates. A per-command `timeout` is capped by the
+remaining total budget, and a timed-out command's supervised process tree is
+terminated. Any gates that could not start are returned as blocking `not-run`
+results, preserving one result per configured gate.
+
+`skillgate check --receipt <file>` writes a versioned JSON receipt with the workspace
+snapshot, per-gate status/reason/duration, and total budget. `--cache` stores a passing
+receipt outside the working tree and reuses it only for the same parsed policy,
+runtime, base commit, and repository snapshot. Failing results are never cached.

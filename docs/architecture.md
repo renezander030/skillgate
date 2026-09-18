@@ -17,6 +17,10 @@ README for the research basis (the Compliance Gap).
 | `cli.ts` | Argument parsing and the `audit` / `check` / `init` / `scaffold` / `drift` / `diff-instructions` / `canonical` / `sync` commands. Owns all process output and exit codes; it is the only module that talks to the terminal. |
 | `spec.ts` | The spec types, `findSpecPath()` (where a `done.yaml` may live), and `loadSpec()` (parse + validate, including the optional `version` field). |
 | `core.ts` | `runGates()` — the deterministic evaluator. One `case` per gate type in `checkGate()`. `isFinishLine()` decides whether a command crosses the line. **This is the pure heart; it never reads argv or writes output.** |
+| `command.ts` | Structural shell segmentation and finish-line matching across POSIX shells, PowerShell, wrappers, and Windows executable suffixes. |
+| `process.ts` | Supervised command execution with bounded wall time and process-tree cleanup. |
+| `receipt.ts` | Repository snapshot keys, passing-result cache storage, and versioned execution receipts. |
+| `integrations.ts` | Idempotent installer and health checks for Claude Code, OpenCode, GitHub Actions, and pre-commit. |
 | `drift.ts` | Instruction-file drift detection (similarity of CLAUDE.md / AGENTS.md / Cursor / Copilot / …). Powers the `instruction-sync` gate and the `drift` / `diff-instructions` commands. Also exports `lineDiff()` and `formatDiff()` for showing line-level changes between instruction files. |
 | `link.ts` | `runSync()` — makes one instruction file canonical and links the rest. Powers `sync`. |
 | `scaffold.ts` | `runScaffold()` — generates `.skillgate/evidence/` directory with stack-specific evidence file templates and optionally updates agent instruction files. Powers `scaffold`. |
@@ -35,6 +39,11 @@ returns `{ passed, results, failed }`. Everything that touches the terminal, the
 process exit code, or temp files lives in `cli.ts`. That split is what makes the core
 trivially testable (`test/core.test.ts`, `test/spec.test.ts`) and lets the CLI be
 covered end-to-end as a real process (`test/e2e.test.ts`).
+
+Policy lookup is worktree-local: `findSpecPath()` walks from the requested directory
+to the first `.git` boundary, and `specRoot()` makes all relative gate paths resolve
+from the policy's workspace. A nested checkout therefore cannot inherit a parent
+repository's policy accidentally.
 
 ## Adding a gate type
 

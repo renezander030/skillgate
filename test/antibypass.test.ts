@@ -16,6 +16,7 @@ import {
   readFileAtRef,
   listFilesAtRef,
   gitAvailable,
+  repoRelativePath,
   repoRoot,
 } from "../src/git.js";
 import type { Spec } from "../src/spec.js";
@@ -69,7 +70,8 @@ test("matchesGlob: honours ignore globs", () => {
 test("git plumbing: availability, root, read + list at a ref", () => {
   const dir = gitProject({ "src/a.ts": "export const a = 1\n", "README.md": "hi\n" });
   assert.equal(gitAvailable(dir), true);
-  assert.equal(repoRoot(dir), fs.realpathSync(dir));
+  assert.equal(path.basename(repoRoot(dir)!), path.basename(dir));
+  assert.equal(repoRelativePath(dir, path.join(dir, "src", "a.ts")), "src/a.ts");
   assert.equal(readFileAtRef(dir, "HEAD", "src/a.ts"), "export const a = 1\n");
   assert.equal(readFileAtRef(dir, "HEAD", "does/not/exist.ts"), null);
   const files = listFilesAtRef(dir, "HEAD");

@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import path from "node:path";
 
 /**
  * Git plumbing for base-pinned and diff-aware gates. Every call is read-only and
@@ -22,7 +23,19 @@ export function gitAvailable(cwd: string): boolean {
 /** Absolute path of the repo root containing `cwd`, or null when not a repo. */
 export function repoRoot(cwd: string): string | null {
   try {
-    return execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd, ...GIT_OPTS }).trim();
+    return path.normalize(execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd, ...GIT_OPTS }).trim());
+  } catch {
+    return null;
+  }
+}
+
+/** Git-root-relative path for `file`, robust to Windows short/long path aliases. */
+export function repoRelativePath(cwd: string, file: string): string | null {
+  try {
+    const prefix = execFileSync("git", ["rev-parse", "--show-prefix"], { cwd, ...GIT_OPTS }).trim();
+    const relative = path.relative(cwd, file).split(path.sep).join("/");
+    if (relative === ".." || relative.startsWith("../")) return null;
+    return path.posix.normalize(path.posix.join(prefix, relative));
   } catch {
     return null;
   }

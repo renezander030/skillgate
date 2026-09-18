@@ -101,21 +101,30 @@ test("non-finish-line command passes through", async (t) => {
   await hooks["tool.execute.before"](...bashCall("ls -la"))
 })
 
-test("broken spec writes warning to stderr and does not crash", async (t) => {
+test("broken configured spec fails closed", async (t) => {
   const dir = tmpProject({
     ".skillgate/done.yaml": "this is not valid yaml: [[[,,\nbroken",
   })
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
   const hooks = await SkillGate({ directory: dir })
-  const chunks: string[] = []
-  const orig = process.stderr.write.bind(process.stderr)
-  process.stderr.write = (chunk: any) => { chunks.push(String(chunk)); return true }
-  try {
-    await hooks["tool.execute.before"](...bashCall("git commit -m x"))
-    const combined = chunks.join("")
-    assert.match(combined, /skillgate: warning/)
-    assert.match(combined, /spec/)
-  } finally {
-    process.stderr.write = orig
-  }
+  await assert.rejects(() => hooks["tool.execute.before"](...bashCall("git commit -m x")), /configured policy is invalid/)
+})
+
+test("nested worktree directory resolves policy and files from the worktree root", async (t) => {
+  const dir = tmpProject({
+    ".git/HEAD": "ref: refs/heads/main\n",
+    "README.md": "present\n",
+    "packages/app/src/index.ts": "export {}\n",
+    ".skillgate/done.yaml": [
+      "finishLine:",
+      "  - git push",
+      "gates:",
+      "  - id: readme",
+      "    type: file-exists",
+      "    file: README.md",
+    ].join("\n"),
+  })
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const hooks = await SkillGate({ directory: path.join(dir, "packages", "app", "src") })
+  await hooks["tool.execute.before"](...bashCall("git push origin main"))
 })

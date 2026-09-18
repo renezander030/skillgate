@@ -16,9 +16,8 @@ land in a minor (`0.x`) release, but they are always called out in
 an omitted version means "the current format". The field exists so that:
 
 - a spec can opt into a future format explicitly, and
-- an **older** skillgate that meets a **newer** spec degrades loudly: it prints a
-  warning (`spec declares version N but this build understands up to M`) instead of
-  silently misreading gates.
+- an **older** skillgate that meets a **newer** spec fails closed with an upgrade
+  error instead of silently misreading or skipping enforcement.
 
 The format version this build understands is exported as `SPEC_VERSION` from
 `src/spec.ts`. It is bumped only on a breaking change to the schema, not for additive
