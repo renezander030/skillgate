@@ -12,7 +12,7 @@ import { runScaffold, listTemplates } from "./scaffold.js";
 import { doctor, installIntegration, INTEGRATION_TARGETS, type IntegrationTarget } from "./integrations.js";
 import { analyzeCommand } from "./command.js";
 import { readCachedResult, snapshotKey, writeCachedResult, writeReceipt } from "./receipt.js";
-import { resolveBaseRef, mergeBase, readFileAtRef, repoRoot } from "./git.js";
+import { resolveBaseRef, mergeBase, readFileAtRef, repoRelativePath, repoRoot } from "./git.js";
 import {
   createPrivatePassProof,
   generateKeyFiles,
@@ -253,9 +253,9 @@ function resolveSpecAndBase(specPathHint: string | null): Resolved {
   }
   const root = repoRoot(workspace);
   if (!root) die(2, "--pin: not a git repository (fail-closed)");
-  const rels = specPathHint
-    ? [path.relative(root, specPathHint).split(path.sep).join("/")]
-    : DEFAULT_SPEC_PATHS;
+  const pinnedRel = specPathHint ? repoRelativePath(workspace, specPathHint) : null;
+  if (specPathHint && !pinnedRel) die(2, "--pin: spec is outside the active Git worktree (fail-closed)");
+  const rels = pinnedRel ? [pinnedRel] : DEFAULT_SPEC_PATHS;
   for (const rel of rels) {
     const raw = readFileAtRef(workspace, gateBase!, rel);
     if (raw != null) {
