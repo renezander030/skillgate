@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- Lead the README with the existing commit-gate demo and one-command audit, followed by a link to the maintainer's GitHub profile.
+
 ## 0.8.0 - 2026-09-06
 
 ### Added
