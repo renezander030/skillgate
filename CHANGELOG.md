@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.1 - 2026-09-25
+
 ### Fixed
 - Diff-aware gates (`no-new`, `no-fewer`, `no-deleted`) and `when.changed` work on a
   repository's first commit: with no commits on any ref and no base requested, the base is
