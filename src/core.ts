@@ -13,7 +13,7 @@ import {
   DEFAULT_RUN_TIMEOUT_MS,
 } from "./spec.js";
 import { checkDrift, DEFAULT_THRESHOLD } from "./drift.js";
-import { readFileAtRef, listFilesAtRef, matchesGlob, changedFiles, currentBranch } from "./git.js";
+import { readFileAtRef, listFilesAtRef, matchesGlob, changedFiles, currentBranch, baseLabel } from "./git.js";
 import { checkManifest, SUPPORTED_MANIFESTS } from "./deps.js";
 import { isStructuredCommandMatch } from "./command.js";
 import { runShellCommand } from "./process.js";
@@ -304,7 +304,7 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
           baseCount += fileBase;
           workCount += fileWork;
         }
-        const short = opts.baseRef.slice(0, 12);
+        const short = baseLabel(opts.baseRef);
         if (gate.type === "no-fewer") {
           return workCount < baseCount
             ? {
@@ -335,7 +335,7 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
           if (workFiles.length === 0) return { ...base, ok: false, reason: noOpReason(gate.glob) };
         }
         const missing = baseFiles.filter((f) => !fs.existsSync(path.resolve(cwd, f)));
-        const short = opts.baseRef.slice(0, 12);
+        const short = baseLabel(opts.baseRef);
         return missing.length
           ? {
               ...base,
@@ -396,7 +396,7 @@ function skipReason(when: GateWhen | undefined, cwd: string, opts: RunOptions, c
   if (when.changed && opts.baseRef) {
     if (ctx.changed === undefined) ctx.changed = changedFiles(cwd, opts.baseRef);
     if (ctx.changed != null && !ctx.changed.some((file) => when.changed!.some((glob) => matchesGlob(file, glob)))) {
-      return `skipped: no changed file matches when.changed (${when.changed.join(", ")}) vs ${opts.baseRef.slice(0, 12)}`;
+      return `skipped: no changed file matches when.changed (${when.changed.join(", ")}) vs ${baseLabel(opts.baseRef)}`;
     }
   }
   return null;

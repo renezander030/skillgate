@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+- Diff-aware gates (`no-new`, `no-fewer`, `no-deleted`) and `when.changed` work on a
+  repository's first commit: with no commits on any ref and no base requested, the base is
+  the empty tree. An explicit `--base` or `SKILLGATE_BASE` that does not resolve still fails
+  closed, and a repository with any history always resolves against a real ref.
+
 ## 0.10.0 - 2026-09-25
 
 ### Added

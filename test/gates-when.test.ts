@@ -8,6 +8,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { runGates, decideCommand } from "../src/core.js";
 import { parseSpec, type Spec } from "../src/spec.js";
+import { resolveBaseRef, EMPTY_TREE } from "../src/git.js";
 
 function write(dir: string, files: Record<string, string>): void {
   for (const [rel, content] of Object.entries(files)) {
@@ -214,4 +215,38 @@ test("absent reports a file:line location for annotations", () => {
   const dir = tmpProject({ "src/a.ts": "ok\n// TODO fix\n" });
   const r = runGates({ gates: [{ id: "t", type: "absent", glob: "src/*.ts", pattern: "TODO" }] }, dir);
   assert.deepEqual(r.failed[0].location, { file: "src/a.ts", line: 2 });
+});
+
+test("a repository with no commits judges diff gates against the empty tree", (t) => {
+  const dir = tmpProject({ "test/a.test.ts": "test('x', () => {})\n", "src/a.ts": "ok\n" });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  git(dir, ["init", "-q", "-b", "main"]);
+  const saved = process.env.SKILLGATE_BASE;
+  delete process.env.SKILLGATE_BASE;
+  try {
+    const base = resolveBaseRef(dir);
+    assert.equal(base, EMPTY_TREE);
+    const r = runGates({
+      gates: [
+        { id: "kept", type: "no-deleted", glob: "test/**" },
+        { id: "not-fewer", type: "no-fewer", glob: "test/**", pattern: "test\\(" },
+        { id: "no-skips", type: "no-new", glob: "test/**", pattern: "\\.skip\\(" },
+        { id: "src-only", type: "file-exists", file: "src/a.ts", when: { changed: ["src/**"] } },
+      ],
+    }, dir, { baseRef: base! });
+    assert.equal(r.passed, true, JSON.stringify(r.failed));
+    assert.match(r.results[0].reason, /empty tree/);
+    assert.equal(r.results[3].status, "pass");
+    // An explicit base that does not resolve still fails closed.
+    assert.equal(resolveBaseRef(dir, "origin/nope"), null);
+  } finally {
+    if (saved != null) process.env.SKILLGATE_BASE = saved;
+  }
+});
+
+test("a repository with history never falls back to the empty tree", (t) => {
+  const { dir } = gitProject({ "a.txt": "x" });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  git(dir, ["checkout", "-q", "--orphan", "fresh"]);
+  assert.equal(resolveBaseRef(dir), "main");
 });
