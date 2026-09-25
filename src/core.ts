@@ -5,13 +5,16 @@ import { globSync } from "tinyglobby";
 import {
   type Spec,
   type Gate,
+  type GateWhen,
   type TrivyGate,
   DEFAULT_COMMAND_TIMEOUT_MS,
+  DEFAULT_MAX_BYTES,
   DEFAULT_NOT_EMPTY_MIN,
   DEFAULT_RUN_TIMEOUT_MS,
 } from "./spec.js";
 import { checkDrift, DEFAULT_THRESHOLD } from "./drift.js";
-import { readFileAtRef, listFilesAtRef, matchesGlob } from "./git.js";
+import { readFileAtRef, listFilesAtRef, matchesGlob, changedFiles, currentBranch } from "./git.js";
+import { checkManifest, SUPPORTED_MANIFESTS } from "./deps.js";
 import { isStructuredCommandMatch } from "./command.js";
 import { runShellCommand } from "./process.js";
 
@@ -20,9 +23,11 @@ export interface GateResult {
   type: string;
   ok: boolean;
   reason: string;
-  /** Explicit execution state; `not-run` is always blocking. */
-  status?: "pass" | "fail" | "not-run";
+  /** Explicit execution state; `not-run` is always blocking, `skipped` never is. */
+  status?: "pass" | "fail" | "not-run" | "skipped";
   durationMs?: number;
+  /** Workspace-relative file (and 1-based line) a failure points at, when known. */
+  location?: { file: string; line?: number };
 }
 
 export interface RunResult {
@@ -40,6 +45,10 @@ export interface RunOptions {
   timeoutMs?: number;
   /** Internal per-gate cap derived from the remaining total budget. */
   remainingMs?: number;
+  /** The finish-line command being judged, for `when.command`. Unset = every gate applies. */
+  command?: string;
+  /** Treat a glob that matches no files as a pass (built-in audit defaults only). */
+  allowEmptyGlobs?: boolean;
 }
 
 const IGNORE = ["**/node_modules/**", "**/.git/**", "dist/**"];
@@ -57,6 +66,60 @@ function countMatchingLines(text: string, re: RegExp, onFirst?: (i: number) => v
     }
   }
   return n;
+}
+
+/** A pattern gate hit a read limit; the gate fails with this message. */
+class ScanLimit extends Error {}
+
+/** Reads text for pattern gates, enforcing the per-file size cap and the run deadline. */
+class Scanner {
+  private readonly maxBytes: number;
+  private readonly deadline: number;
+  scanned = 0;
+
+  constructor(maxBytes: number | undefined, remainingMs: number | undefined) {
+    this.maxBytes = maxBytes ?? DEFAULT_MAX_BYTES;
+    this.deadline = Date.now() + (remainingMs ?? Number.POSITIVE_INFINITY);
+  }
+
+  private tick(total: number): void {
+    if (Date.now() > this.deadline) throw new ScanLimit(`timed out after scanning ${this.scanned} of ${total} files`);
+  }
+
+  private cap(label: string, bytes: number): void {
+    if (bytes > this.maxBytes) {
+      throw new ScanLimit(`${label} is ${bytes} bytes, over the ${this.maxBytes}-byte scan limit — add it to ignore or raise maxBytes`);
+    }
+  }
+
+  /** Working-tree text, or null when the file cannot be read (gone, a directory). */
+  file(cwd: string, rel: string, total: number): string | null {
+    this.tick(total);
+    const full = path.resolve(cwd, rel);
+    let size: number;
+    try {
+      const stat = fs.statSync(full);
+      if (!stat.isFile()) return null;
+      size = stat.size;
+    } catch {
+      return null;
+    }
+    this.cap(rel, size);
+    this.scanned++;
+    return fs.readFileSync(full, "utf8");
+  }
+
+  /** Text as of a git ref, or null when the file did not exist there. */
+  atRef(cwd: string, ref: string, rel: string, total: number): string | null {
+    this.tick(total);
+    const text = readFileAtRef(cwd, ref, rel);
+    if (text != null) this.cap(`${rel} at ${ref.slice(0, 12)}`, Buffer.byteLength(text));
+    return text;
+  }
+}
+
+function noOpReason(glob: string): string {
+  return `glob ${glob} matches no files — the gate would pass as a no-op (fix the glob or set allowEmpty: true)`;
 }
 
 function formatTrivyCommand(bin: string, args: string[]): string {
@@ -135,35 +198,34 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
         const files = Array.isArray(gate.file) ? gate.file : [gate.file];
         const missing = files.filter((f) => !fs.existsSync(path.resolve(cwd, f)));
         return missing.length
-          ? { ...base, ok: false, reason: `missing: ${missing.join(", ")}` }
+          ? { ...base, ok: false, reason: `missing: ${missing.join(", ")}`, location: { file: missing[0] } }
           : { ...base, ok: true, reason: `present: ${files.join(", ")}` };
       }
       case "file-contains": {
         const full = path.resolve(cwd, gate.file);
-        if (!fs.existsSync(full)) return { ...base, ok: false, reason: `file not found: ${gate.file}` };
+        if (!fs.existsSync(full)) return { ...base, ok: false, reason: `file not found: ${gate.file}`, location: { file: gate.file } };
         const re = new RegExp(gate.pattern, gate.flags ?? "");
-        return re.test(fs.readFileSync(full, "utf8"))
+        const text = new Scanner(gate.maxBytes, opts.remainingMs).file(cwd, gate.file, 1) ?? "";
+        return re.test(text)
           ? { ...base, ok: true, reason: `${gate.file} matches /${gate.pattern}/` }
-          : { ...base, ok: false, reason: `${gate.file} missing /${gate.pattern}/` };
+          : { ...base, ok: false, reason: `${gate.file} missing /${gate.pattern}/`, location: { file: gate.file } };
       }
       case "absent": {
         const re = new RegExp(gate.pattern, (gate.flags ?? "").replace(/[gy]/g, ""));
         const files = globSync(gate.glob, { cwd, dot: true, ignore: [...IGNORE, ...(gate.ignore ?? [])] });
+        if (files.length === 0 && !gate.allowEmpty && !opts.allowEmptyGlobs) return { ...base, ok: false, reason: noOpReason(gate.glob) };
+        const scan = new Scanner(gate.maxBytes, opts.remainingMs);
         for (const f of files) {
-          let text: string;
-          try {
-            text = fs.readFileSync(path.resolve(cwd, f), "utf8");
-          } catch {
-            continue;
-          }
+          const text = scan.file(cwd, f, files.length);
+          if (text == null) continue;
           const lines = text.split("\n");
           for (let i = 0; i < lines.length; i++) {
             if (re.test(lines[i])) {
-              return { ...base, ok: false, reason: `${f}:${i + 1} matches /${gate.pattern}/` };
+              return { ...base, ok: false, reason: `${f}:${i + 1} matches /${gate.pattern}/`, location: { file: f, line: i + 1 } };
             }
           }
         }
-        return { ...base, ok: true, reason: `no /${gate.pattern}/ in ${gate.glob}` };
+        return { ...base, ok: true, reason: `no /${gate.pattern}/ in ${gate.glob} (${files.length} files)` };
       }
       case "command": {
         const timeout = Math.max(1, Math.min(gate.timeout ?? DEFAULT_COMMAND_TIMEOUT_MS, opts.remainingMs ?? Number.POSITIVE_INFINITY));
@@ -182,8 +244,8 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
         return checkTrivyGate(gate, cwd, opts.remainingMs);
       case "evidence": {
         const full = path.resolve(cwd, gate.file);
-        if (!fs.existsSync(full)) return { ...base, ok: false, reason: `evidence missing: ${gate.file}` };
-        if (fs.statSync(full).size === 0) return { ...base, ok: false, reason: `evidence empty: ${gate.file}` };
+        if (!fs.existsSync(full)) return { ...base, ok: false, reason: `evidence missing: ${gate.file}`, location: { file: gate.file } };
+        if (fs.statSync(full).size === 0) return { ...base, ok: false, reason: `evidence empty: ${gate.file}`, location: { file: gate.file } };
         return { ...base, ok: true, reason: `evidence present: ${gate.file}` };
       }
       case "instruction-sync": {
@@ -210,7 +272,8 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
         if (entries.length < min) return { ...base, ok: false, reason: `directory has ${entries.length} entries, expected at least ${min}` };
         return { ...base, ok: true, reason: `directory has ${entries.length} entries` };
       }
-      case "no-new": {
+      case "no-new":
+      case "no-fewer": {
         if (!opts.baseRef) {
           return { ...base, ok: false, reason: `no git base ref to diff against — pass --base <ref> or run in a repo with an upstream (fail-closed)` };
         }
@@ -222,28 +285,42 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
         const baseFiles = listFilesAtRef(cwd, opts.baseRef).filter(
           (p) => matchesGlob(p, gate.glob, ignore) && !IGNORE.some((ig) => matchesGlob(p, ig)),
         );
-        const union = new Set<string>([...workFiles, ...baseFiles]);
+        const union = [...new Set<string>([...workFiles, ...baseFiles])];
+        if (union.length === 0 && !gate.allowEmpty && !opts.allowEmptyGlobs) return { ...base, ok: false, reason: noOpReason(gate.glob) };
+        const scan = new Scanner(gate.maxBytes, opts.remainingMs);
         let baseCount = 0;
         let workCount = 0;
-        let firstNew = "";
+        let firstNew: { file: string; line: number } | undefined;
+        let firstLost: string | undefined;
         for (const f of union) {
-          const baseText = readFileAtRef(cwd, opts.baseRef, f);
-          baseCount += baseText == null ? 0 : countMatchingLines(baseText, re());
-          try {
-            const t = fs.readFileSync(path.resolve(cwd, f), "utf8");
-            workCount += countMatchingLines(t, re(), (i) => {
-              if (!firstNew) firstNew = `${f}:${i + 1}`;
-            });
-          } catch {
-            /* file gone in working tree — contributes 0, handled by no-deleted */
-          }
+          const baseText = scan.atRef(cwd, opts.baseRef, f, union.length);
+          const fileBase = baseText == null ? 0 : countMatchingLines(baseText, re());
+          const text = scan.file(cwd, f, union.length);
+          // A file gone from the working tree contributes 0; no-deleted covers the file itself.
+          const fileWork = text == null ? 0 : countMatchingLines(text, re(), (i) => {
+            if (!firstNew) firstNew = { file: f, line: i + 1 };
+          });
+          if (fileWork < fileBase && !firstLost) firstLost = f;
+          baseCount += fileBase;
+          workCount += fileWork;
         }
         const short = opts.baseRef.slice(0, 12);
+        if (gate.type === "no-fewer") {
+          return workCount < baseCount
+            ? {
+                ...base,
+                ok: false,
+                reason: `-${baseCount - workCount} /${gate.pattern}/ vs ${short} (base ${baseCount}, now ${workCount})${firstLost ? `, e.g. ${firstLost}` : ""}`,
+                ...(firstLost ? { location: { file: firstLost } } : {}),
+              }
+            : { ...base, ok: true, reason: `no fewer /${gate.pattern}/ vs ${short} (${workCount} ≥ ${baseCount})` };
+        }
         return workCount > baseCount
           ? {
               ...base,
               ok: false,
-              reason: `+${workCount - baseCount} new /${gate.pattern}/ vs ${short} (base ${baseCount}, now ${workCount})${firstNew ? `, e.g. ${firstNew}` : ""}`,
+              reason: `+${workCount - baseCount} new /${gate.pattern}/ vs ${short} (base ${baseCount}, now ${workCount})${firstNew ? `, e.g. ${firstNew.file}:${firstNew.line}` : ""}`,
+              ...(firstNew ? { location: firstNew } : {}),
             }
           : { ...base, ok: true, reason: `no new /${gate.pattern}/ vs ${short} (${workCount} ≤ ${baseCount})` };
       }
@@ -253,6 +330,10 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
         }
         const ignore = gate.ignore ?? [];
         const baseFiles = listFilesAtRef(cwd, opts.baseRef).filter((p) => matchesGlob(p, gate.glob, ignore));
+        if (baseFiles.length === 0 && !gate.allowEmpty && !opts.allowEmptyGlobs) {
+          const workFiles = globSync(gate.glob, { cwd, dot: true, ignore: [...IGNORE, ...ignore] });
+          if (workFiles.length === 0) return { ...base, ok: false, reason: noOpReason(gate.glob) };
+        }
         const missing = baseFiles.filter((f) => !fs.existsSync(path.resolve(cwd, f)));
         const short = opts.baseRef.slice(0, 12);
         return missing.length
@@ -260,15 +341,65 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
               ...base,
               ok: false,
               reason: `${missing.length} file(s) matching ${gate.glob} deleted since ${short}: ${missing.slice(0, 3).join(", ")}${missing.length > 3 ? " …" : ""}`,
+              location: { file: missing[0] },
             }
           : { ...base, ok: true, reason: `no ${gate.glob} files deleted vs ${short} (${baseFiles.length} present)` };
+      }
+      case "deps-locked": {
+        const manifests = gate.manifest == null
+          ? SUPPORTED_MANIFESTS.filter((m) => fs.existsSync(path.resolve(cwd, m)))
+          : Array.isArray(gate.manifest) ? gate.manifest : [gate.manifest];
+        if (manifests.length === 0) {
+          return { ...base, ok: false, reason: `no supported manifest found (${SUPPORTED_MANIFESTS.join(", ")}) — set manifest:` };
+        }
+        let declared = 0;
+        for (const m of manifests) {
+          const report = checkManifest(path.resolve(cwd, m));
+          if (report.error) return { ...base, ok: false, reason: `${m}: ${report.error}`, location: { file: m } };
+          if (report.missing.length) {
+            const lock = path.basename(report.lockfile ?? "lockfile");
+            return {
+              ...base,
+              ok: false,
+              reason: `${m}: ${report.missing.length} declared ${report.missing.length === 1 ? "dependency is" : "dependencies are"} not in ${lock}: ${report.missing.slice(0, 5).join(", ")}${report.missing.length > 5 ? " …" : ""} — install it or remove it`,
+              location: { file: m },
+            };
+          }
+          declared += report.declared.length;
+        }
+        return { ...base, ok: true, reason: `${declared} declared dependencies locked (${manifests.join(", ")})` };
       }
       default:
         return { ...base, ok: false, reason: `unknown gate type` };
     }
   } catch (e: any) {
+    if (e instanceof ScanLimit) return { ...base, ok: false, reason: e.message };
     return { ...base, ok: false, reason: `error: ${e.message}` };
   }
+}
+
+/**
+ * Decide whether `when` excludes this gate. Returns the skip reason, or null when
+ * the gate applies. A condition that cannot be decided never skips.
+ */
+function skipReason(when: GateWhen | undefined, cwd: string, opts: RunOptions, ctx: { changed?: string[] | null; branch?: string | null }): string | null {
+  if (!when) return null;
+  if (when.command && opts.command != null && !isStructuredCommandMatch(opts.command, when.command)) {
+    return `skipped: not required for this command (when.command: ${when.command.join(", ")})`;
+  }
+  if (when.branch) {
+    if (ctx.branch === undefined) ctx.branch = currentBranch(cwd) ?? null;
+    if (ctx.branch != null && !when.branch.some((glob) => matchesGlob(ctx.branch!, glob))) {
+      return `skipped: branch ${ctx.branch} not in when.branch (${when.branch.join(", ")})`;
+    }
+  }
+  if (when.changed && opts.baseRef) {
+    if (ctx.changed === undefined) ctx.changed = changedFiles(cwd, opts.baseRef);
+    if (ctx.changed != null && !ctx.changed.some((file) => when.changed!.some((glob) => matchesGlob(file, glob)))) {
+      return `skipped: no changed file matches when.changed (${when.changed.join(", ")}) vs ${opts.baseRef.slice(0, 12)}`;
+    }
+  }
+  return null;
 }
 
 /** Run every gate in the spec over `cwd`. Pure: same inputs (incl. git base), same verdict. */
@@ -276,7 +407,13 @@ export function runGates(spec: Spec, cwd: string, opts: RunOptions = {}): RunRes
   const started = Date.now();
   const timeoutMs = opts.timeoutMs ?? spec.timeout ?? DEFAULT_RUN_TIMEOUT_MS;
   const results: GateResult[] = [];
+  const ctx: { changed?: string[] | null; branch?: string | null } = {};
   for (const gate of spec.gates ?? []) {
+    const skipped = skipReason(gate.when, cwd, opts, ctx);
+    if (skipped) {
+      results.push({ id: gate.id, type: gate.type, ok: true, status: "skipped", durationMs: 0, reason: skipped });
+      continue;
+    }
     const elapsed = Date.now() - started;
     const remainingMs = timeoutMs - elapsed;
     if (remainingMs <= 0) {
@@ -326,9 +463,10 @@ export function decideCommand(spec: Spec, cwd: string, command: string, opts: Ru
   if (!isFinishLine(command, spec.finishLine)) {
     return { decision: "allow", reason: "not a finish-line command", command };
   }
-  const result = runGates(spec, cwd, opts);
+  const result = runGates(spec, cwd, { ...opts, command });
+  const applied = result.results.filter((r) => r.status !== "skipped").length;
   return result.passed
-    ? { decision: "allow", reason: `all ${result.results.length} gates passed`, command, result }
+    ? { decision: "allow", reason: `all ${applied} applicable gates passed`, command, result }
     : {
         decision: "block",
         reason: `${result.failed.length} of ${result.results.length} gates unmet: ${result.failed.map((f) => f.id).join(", ")}`,

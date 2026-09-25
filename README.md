@@ -152,16 +152,25 @@ Full walkthrough — mirror-to-GitHub, deploy keys, and the Docker / VM substrat
 Wire an existing policy into a harness without hand-editing its config:
 
 ```bash
-skillgate install claude-code
+skillgate install claude-code      # add --stop to also gate the end of the agent's turn
+skillgate install codex
+skillgate install gemini-cli
+skillgate install cursor
 skillgate install opencode
 skillgate install github-actions
 skillgate install pre-commit
 skillgate doctor claude-code       # validates policy discovery and hook registration
 ```
 
-`install all` configures all four layers. Installation is idempotent, preserves
-existing Claude/OpenCode settings, refuses to overwrite unrelated workflows, and
-pins generated npm commands to the installed Skillgate version.
+`install all` configures every layer. Installation is idempotent, preserves
+existing agent settings, refuses to overwrite unrelated workflows, and pins
+generated npm commands to the installed Skillgate version.
+
+Agent hooks are installed **fail-closed**: if the gate itself cannot run (npx
+missing, offline, registry error), the hook blocks instead of letting the command
+through, and it gets a 10-minute budget so a slow test suite doesn't time out into
+an allow. `doctor` flags a hook installed by an older version that would fail
+open. Re-running `install` upgrades it in place.
 
 ## Define your gates
 
@@ -258,6 +267,30 @@ A `file-contains` gate (e.g. require a touched changelog) and the other types ar
 | `evidence` | a named `file` exists and is non-empty |
 | `not-empty` | a directory at `path` contains at least `min` entries (default 1) |
 | `instruction-sync` | every AI agent instruction file (CLAUDE.md, AGENTS.md, Cursor, Copilot…) still agrees with the canonical one (optional `threshold`, default 0.95) |
+| `no-new` | the count of `pattern` matches in `glob` did not **increase** versus the base ref (skips, `eslint-disable`, TODOs) |
+| `no-fewer` | the count of `pattern` matches in `glob` did not **decrease** versus the base ref (test cases, assertions) |
+| `no-deleted` | every file matching `glob` at the base ref still exists |
+| `deps-locked` | every dependency declared in `package.json` / `pyproject.toml` is in the lockfile, so a hallucinated package can't slip in |
+
+A glob that matches no files fails its gate instead of passing as a silent no-op
+(set `allowEmpty: true` when that is expected). Pattern gates fail on files over
+`maxBytes` (default 10 MiB) rather than hanging on them.
+
+**Different gates for different finish lines.** A `when` block scopes a gate by
+command, changed files, or branch. Fast gates on every commit, the full suite only
+on push or publish, and only when source changed:
+
+```yaml
+  - id: full-suite
+    type: command
+    run: npm run test:all
+    when:
+      command: ["git push", "npm publish"]
+      changed: ["src/**"]
+```
+
+A condition skillgate cannot decide runs the gate. See the
+[spec reference](docs/spec-reference.md#conditional-gates-when).
 
 **Trivy security gate.** Add `type: trivy` when the finish line should stop on
 leaked secrets or critical CVEs. skillgate runs Trivy's secret scan separately
@@ -336,7 +369,8 @@ That is the whole integration. Whatever model you have configured, the gate is t
 
 ### Claude Code
 
-A `PreToolUse` deny on finish-line commands, calling the CLI:
+A `PreToolUse` deny on finish-line commands, calling the CLI. `skillgate install
+claude-code` writes it:
 
 ```jsonc
 // .claude/settings.json
@@ -345,16 +379,37 @@ A `PreToolUse` deny on finish-line commands, calling the CLI:
     "PreToolUse": [
       {
         "matcher": "Bash",
-        "hooks": [{ "type": "command", "command": "npx @reneza/skillgate gate" }]
+        "hooks": [{ "type": "command", "command": "npx --yes @reneza/skillgate@<version> gate || exit 2", "timeout": 600 }]
       }
     ]
   }
 }
 ```
 
+**Gate "done" itself.** `skillgate install claude-code --stop` also registers a
+`Stop` hook (`skillgate gate --event stop`). When the agent tries to end its turn
+with changes in the worktree and unmet gates, the stop is refused and the failing
+gates are fed back as the reason, so the agent keeps working instead of reporting
+done. A clean worktree always passes, and Claude Code caps consecutive
+continuations.
+
+### Codex, Gemini CLI, Cursor
+
+The same `skillgate gate` judges the command in each agent's own hook protocol:
+
+| Agent | `skillgate install` writes | Hook |
+|---|---|---|
+| Codex | `.codex/hooks.json` | `PreToolUse` on `Bash`. Codex runs a new project hook only after you trust it. |
+| Gemini CLI | `.gemini/settings.json` | `BeforeTool` on `run_shell_command`, answering with `--format gemini` JSON |
+| Cursor | `.cursor/hooks.json` | `beforeShellExecution` with `failClosed: true`, answering with `--format cursor` JSON |
+
 ### pre-commit and CI — works for any agent or model
 
 These need no harness integration at all, which makes them the universal backstop. See [`contrib/`](contrib/) for a ready [pre-commit hook](contrib/pre-commit-config.yaml) and [GitHub Action](contrib/github-action.yml). Pair the Action with branch protection and a required status check: that layer lives server-side, outside any agent's reach.
+
+In GitHub Actions, `skillgate check --format github` turns each failing gate into
+an error annotation on the file and line it names, so the PR shows the problem
+in place. The workflow from `skillgate install github-actions` uses it.
 
 Native Windows hook files are included in [`contrib/claude-code`](contrib/claude-code/):
 the PowerShell adapter resolves `npx.cmd`, preserves the hook payload on stdin, and
@@ -381,7 +436,7 @@ Two differences that matter beyond "git hook vs git plumbing":
 
 | Layer | Strength |
 |---|---|
-| opencode / Claude Code deny | **Soft** — enforced locally; a locked-down harness permission profile makes it hold |
+| opencode / Claude Code / Codex / Gemini CLI / Cursor deny | **Soft** — enforced locally; a locked-down harness permission profile makes it hold |
 | pre-commit | **Soft** — bypassable with `--no-verify` |
 | CI + branch protection | **Hard** — runs server-side, the agent has no write access to it |
 | [self-hosted `pre-receive`](contrib/self-hosted-gate/) | **Hard** — server-side on a box the agent can't log into; free, and works on private repos with no paid tier |

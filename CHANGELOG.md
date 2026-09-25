@@ -2,12 +2,53 @@
 
 ## Unreleased
 
+## 0.10.0 - 2026-09-25
+
 ### Added
+- `skillgate install codex`, `install gemini-cli` and `install cursor` register the gate in
+  each agent's own pre-shell hook (`.codex/hooks.json` PreToolUse, `.gemini/settings.json`
+  BeforeTool, `.cursor/hooks.json` beforeShellExecution with `failClosed`), and `doctor`
+  verifies them.
+- `skillgate gate --format cursor|gemini` answers in Cursor's permission JSON and Gemini
+  CLI's decision JSON. Both formats fail closed with a deny on errors.
+- `skillgate gate --event stop` and `skillgate install claude-code --stop` gate the end of
+  the agent's turn. If the worktree has changes and a gate fails, the Stop hook refuses to
+  stop and sends the failing gates back as the reason. A clean worktree always passes.
+- Conditional gates: an optional `when` block with `command`, `changed` and `branch` lists.
+  A gate whose condition does not hold is reported as `skipped` and never blocks. If a
+  condition cannot be decided, the gate runs. `skillgate check --command "<cmd>"` evaluates
+  the gates required for that finish line.
+- `no-fewer` gate: the count of pattern matches across a glob must not drop versus the base
+  ref. It catches test cases deleted from files that still exist.
+- `deps-locked` gate: every dependency declared in `package.json` (npm, pnpm, yarn, bun
+  lockfiles) or `pyproject.toml` (uv, Poetry, PDM lockfiles) must be in the lockfile. It
+  works offline.
+- `skillgate check --format github` emits an error annotation for each failing gate,
+  anchored to the file and line it names. The `install github-actions` workflow uses it.
+- Gate results carry a `location` (file and line) where the gate can point at one.
 - A `skillgate` agent skill and Claude Code plugin manifest, so the CLI installs into an
   agent in one command (`npx skills add renezander030/skillgate`, or
   `/plugin marketplace add renezander030/skillgate`). The skill covers the audit-first
   order, `install`/`doctor` wiring, `check` before reporting work finished, `verify-patch`,
   the gate types, and the rule that a blocking gate is fixed rather than bypassed.
+
+### Changed
+- Agent hooks from `install` are fail-closed and time-bounded: `|| exit 2` turns any
+  failure to run the gate into a block, and hooks get a 600-second budget. `install`
+  upgrades an existing Skillgate hook in place, and `doctor` flags one that would fail
+  open. The contrib Claude Code hook scripts map every non-block failure to exit 2 as well.
+- Pattern gates (`file-contains`, `absent`, `no-new`, `no-fewer`) read at most `maxBytes`
+  per file (default 10 MiB). They fail on larger files instead of reading them and stop at
+  the run's timeout, reporting how many files they scanned.
+- `audit` against the built-in defaults treats a default glob that matches nothing as a
+  pass.
+
+### Breaking
+- `absent`, `no-new`, `no-fewer` and `no-deleted` gates fail when their glob matches no
+  files. Before this release, a mistyped glob passed as a silent no-op. Fix the glob, or
+  set `allowEmpty: true` where an empty match is expected.
+- Pattern gates fail on files larger than 10 MiB. Add such files to `ignore`, or raise
+  `maxBytes`.
 
 ## 0.9.0 - 2026-09-18
 

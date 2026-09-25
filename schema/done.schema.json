@@ -34,6 +34,17 @@
     }
   },
   "definitions": {
+    "when": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "description": "Conditions under which the gate applies (all must hold). An undecidable condition runs the gate.",
+      "properties": {
+        "command": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "Finish-line command prefixes this gate is required for." },
+        "changed": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "Run only if a file matching one of these globs changed versus the base ref." },
+        "branch": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "Run only on a branch matching one of these globs." }
+      }
+    },
     "base": {
       "properties": {
         "id": { "type": "string" },
@@ -50,6 +61,7 @@
           "properties": {
             "id": { "type": "string" },
             "description": { "type": "string" },
+            "when": { "$ref": "#/definitions/when" },
             "type": { "const": "file-exists" },
             "file": {
               "oneOf": [
@@ -67,10 +79,12 @@
           "properties": {
             "id": { "type": "string" },
             "description": { "type": "string" },
+            "when": { "$ref": "#/definitions/when" },
             "type": { "const": "file-contains" },
             "file": { "type": "string" },
             "pattern": { "type": "string", "description": "JavaScript regular expression source." },
-            "flags": { "type": "string", "description": "Regex flags, e.g. \"i\"." }
+            "flags": { "type": "string", "description": "Regex flags, e.g. \"i\"." },
+            "maxBytes": { "type": "integer", "minimum": 1, "description": "Largest file (bytes) the gate reads; larger files fail it. Default 10485760 (10 MiB)." }
           }
         },
         {
@@ -80,6 +94,7 @@
           "properties": {
             "id": { "type": "string" },
             "description": { "type": "string" },
+            "when": { "$ref": "#/definitions/when" },
             "type": { "const": "absent" },
             "glob": { "type": "string", "description": "Files to scan." },
             "pattern": { "type": "string", "description": "Regex that must NOT appear." },
@@ -88,7 +103,9 @@
               "type": "array",
               "items": { "type": "string" },
               "description": "Extra globs to exclude (fixtures, examples, the spec itself)."
-            }
+            },
+            "maxBytes": { "type": "integer", "minimum": 1, "description": "Largest file (bytes) the gate reads; larger files fail it. Default 10485760 (10 MiB)." },
+            "allowEmpty": { "type": "boolean", "description": "Allow the glob to match no files. Default false: a glob matching nothing fails as a no-op." }
           }
         },
         {
@@ -98,6 +115,7 @@
           "properties": {
             "id": { "type": "string" },
             "description": { "type": "string" },
+            "when": { "$ref": "#/definitions/when" },
             "type": { "const": "command" },
             "run": { "type": "string", "description": "Shell command; must exit 0." },
             "timeout": { "type": "integer", "minimum": 1, "description": "Timeout in milliseconds. Default 30000." }
@@ -110,6 +128,7 @@
           "properties": {
             "id": { "type": "string" },
             "description": { "type": "string" },
+            "when": { "$ref": "#/definitions/when" },
             "type": { "const": "trivy" },
             "target": { "type": "string", "description": "Path to scan. Default \".\"." },
             "trivy": { "type": "string", "description": "Trivy binary to execute. Default \"trivy\"." },
@@ -141,6 +160,7 @@
           "properties": {
             "id": { "type": "string" },
             "description": { "type": "string" },
+            "when": { "$ref": "#/definitions/when" },
             "type": { "const": "evidence" },
             "file": { "type": "string", "description": "A file that must exist and be non-empty." }
           }
@@ -152,6 +172,7 @@
           "properties": {
             "id": { "type": "string" },
             "description": { "type": "string" },
+            "when": { "$ref": "#/definitions/when" },
             "type": { "const": "instruction-sync" },
             "threshold": {
               "type": "number",
@@ -168,6 +189,7 @@
           "properties": {
             "id": { "type": "string" },
             "description": { "type": "string" },
+            "when": { "$ref": "#/definitions/when" },
             "type": { "const": "not-empty" },
             "path": { "type": "string", "description": "Directory path that must contain at least `min` entries." },
             "min": {
@@ -184,6 +206,7 @@
           "properties": {
             "id": { "type": "string" },
             "description": { "type": "string" },
+            "when": { "$ref": "#/definitions/when" },
             "type": { "const": "no-new" },
             "glob": { "type": "string", "description": "Files to scan." },
             "pattern": { "type": "string", "description": "Regex whose match count must not increase versus the base ref." },
@@ -192,7 +215,9 @@
               "type": "array",
               "items": { "type": "string" },
               "description": "Extra globs to exclude."
-            }
+            },
+            "maxBytes": { "type": "integer", "minimum": 1, "description": "Largest file (bytes) the gate reads; larger files fail it. Default 10485760 (10 MiB)." },
+            "allowEmpty": { "type": "boolean", "description": "Allow the glob to match no files. Default false: a glob matching nothing fails as a no-op." }
           }
         },
         {
@@ -202,12 +227,53 @@
           "properties": {
             "id": { "type": "string" },
             "description": { "type": "string" },
+            "when": { "$ref": "#/definitions/when" },
             "type": { "const": "no-deleted" },
             "glob": { "type": "string", "description": "Files that existed at the base ref and must still exist." },
             "ignore": {
               "type": "array",
               "items": { "type": "string" },
               "description": "Extra globs to exclude from the must-still-exist set."
+            },
+            "allowEmpty": { "type": "boolean", "description": "Allow the glob to match no files. Default false: a glob matching nothing fails as a no-op." }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "glob", "pattern"],
+          "properties": {
+            "id": { "type": "string" },
+            "description": { "type": "string" },
+            "when": { "$ref": "#/definitions/when" },
+            "type": { "const": "no-fewer" },
+            "glob": { "type": "string", "description": "Files to scan." },
+            "pattern": { "type": "string", "description": "Regex whose match count must not decrease versus the base ref (test cases, assertions)." },
+            "flags": { "type": "string" },
+            "ignore": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Extra globs to exclude."
+            },
+            "maxBytes": { "type": "integer", "minimum": 1, "description": "Largest file (bytes) the gate reads; larger files fail it. Default 10485760 (10 MiB)." },
+            "allowEmpty": { "type": "boolean", "description": "Allow the glob to match no files. Default false: a glob matching nothing fails as a no-op." }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type"],
+          "properties": {
+            "id": { "type": "string" },
+            "description": { "type": "string" },
+            "when": { "$ref": "#/definitions/when" },
+            "type": { "const": "deps-locked" },
+            "manifest": {
+              "oneOf": [
+                { "type": "string" },
+                { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+              ],
+              "description": "package.json or pyproject.toml path(s). Default: every supported manifest at the workspace root."
             }
           }
         }

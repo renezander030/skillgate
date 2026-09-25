@@ -157,3 +157,44 @@ export function matchesGlob(p: string, glob: string, ignore: string[] = []): boo
   if (!globToRegExp(glob).test(p)) return false;
   return !ignore.some((ig) => globToRegExp(ig).test(p));
 }
+
+/**
+ * Files changed in the working tree versus `ref` (committed, staged, unstaged and
+ * untracked), relative to `cwd`, posix separators. Null when git cannot answer,
+ * so the caller can treat "unknown" conservatively.
+ */
+export function changedFiles(cwd: string, ref: string): string[] | null {
+  try {
+    const diff = execFileSync("git", ["diff", "--name-only", "--relative", "-z", ref], { cwd, ...GIT_OPTS });
+    const untracked = execFileSync("git", ["ls-files", "--others", "--exclude-standard", "-z"], { cwd, ...GIT_OPTS });
+    return [...new Set([...diff.split("\0"), ...untracked.split("\0")].filter(Boolean))];
+  } catch {
+    return null;
+  }
+}
+
+/** True when the worktree has no staged, unstaged or untracked changes. Null outside git. */
+export function isClean(cwd: string): boolean | null {
+  try {
+    return execFileSync("git", ["status", "--porcelain"], { cwd, ...GIT_OPTS }).trim() === "";
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The branch being worked on: `SKILLGATE_BRANCH`, else the checked-out branch,
+ * else the CI-provided branch (a pull-request checkout is a detached merge
+ * commit). Undefined when none is known.
+ */
+export function currentBranch(cwd: string): string | undefined {
+  const fromEnv = process.env.SKILLGATE_BRANCH?.trim();
+  if (fromEnv) return fromEnv;
+  try {
+    const name = execFileSync("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd, ...GIT_OPTS }).trim();
+    if (name) return name;
+  } catch {
+    /* detached HEAD or not a repo */
+  }
+  return process.env.GITHUB_HEAD_REF?.trim() || process.env.GITHUB_REF_NAME?.trim() || undefined;
+}

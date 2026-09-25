@@ -2,10 +2,41 @@ import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 
+/**
+ * Conditions under which a gate applies. Every listed condition must hold; within
+ * a list, any entry may match. A gate whose condition is not met is reported as
+ * `skipped`. When a condition cannot be decided (no command, no git base, no
+ * branch), the gate runs: an unknown never skips enforcement.
+ */
+export interface GateWhen {
+  /** Finish-line command prefixes this gate is required for (structural match). */
+  command?: string[];
+  /** Globs; the gate runs only if a file matching one changed versus the base ref. */
+  changed?: string[];
+  /** Branch globs (`main`, `release/*`); the gate runs only on a matching branch. */
+  branch?: string[];
+}
+
 /** A gate is one deterministic, machine-checkable condition over the workspace. */
 export interface BaseGate {
   id: string;
   description?: string;
+  when?: GateWhen;
+}
+
+/** Shared options for gates that read file contents with a regex. */
+export interface ScanOptions {
+  /** Largest file (bytes) a pattern gate will read. Larger files fail the gate. Default 10 MiB. */
+  maxBytes?: number;
+}
+
+/** Shared option for glob-driven gates. */
+export interface GlobOptions {
+  /**
+   * Allow the glob to match no files. Default false: a glob that matches nothing
+   * fails the gate, because a typo'd glob would otherwise pass forever as a no-op.
+   */
+  allowEmpty?: boolean;
 }
 
 /** Every listed path must exist. */
@@ -15,7 +46,7 @@ export interface FileExistsGate extends BaseGate {
 }
 
 /** A file must contain a regex match (required section, exact phrase, ...). */
-export interface FileContainsGate extends BaseGate {
+export interface FileContainsGate extends BaseGate, ScanOptions {
   type: "file-contains";
   file: string;
   pattern: string;
@@ -23,7 +54,7 @@ export interface FileContainsGate extends BaseGate {
 }
 
 /** A regex must NOT appear in any matched file (secret scrub, stray TODOs, ...). */
-export interface AbsentGate extends BaseGate {
+export interface AbsentGate extends BaseGate, ScanOptions, GlobOptions {
   type: "absent";
   glob: string;
   pattern: string;
@@ -97,7 +128,7 @@ export interface NotEmptyGate extends BaseGate {
  * commit the change forked from, so it needs a resolvable git base (else it fails
  * closed). See `no-deleted` for the removal side.
  */
-export interface NoNewGate extends BaseGate {
+export interface NoNewGate extends BaseGate, ScanOptions, GlobOptions {
   type: "no-new";
   glob: string;
   pattern: string;
@@ -111,11 +142,38 @@ export interface NoNewGate extends BaseGate {
  * an agent that makes a gate pass by deleting the tests (or docs, or migrations)
  * that were holding it. Diff-aware; fails closed without a resolvable git base.
  */
-export interface NoDeletedGate extends BaseGate {
+export interface NoDeletedGate extends BaseGate, GlobOptions {
   type: "no-deleted";
   glob: string;
   /** Extra globs to exclude from the "must still exist" set. */
   ignore?: string[];
+}
+
+/**
+ * The count of lines matching `pattern` across `glob` must not DECREASE versus the
+ * base ref. The removal side of `no-new`: catches an agent that makes a suite pass
+ * by deleting test cases inside files that still exist (`it(`, `test(`,
+ * `def test_`). Diff-aware; fails closed without a resolvable git base.
+ */
+export interface NoFewerGate extends BaseGate, ScanOptions, GlobOptions {
+  type: "no-fewer";
+  glob: string;
+  pattern: string;
+  flags?: string;
+  ignore?: string[];
+}
+
+/**
+ * Every dependency declared in a manifest must be present in its lockfile. A
+ * package an agent invented (or never installed) cannot have resolved into the
+ * lockfile, so this catches hallucinated dependencies offline. Supports
+ * package.json (package-lock.json, npm-shrinkwrap.json, pnpm-lock.yaml,
+ * yarn.lock, bun.lock) and pyproject.toml (uv.lock, poetry.lock, pdm.lock).
+ */
+export interface DepsLockedGate extends BaseGate {
+  type: "deps-locked";
+  /** Manifest path(s). Default: every supported manifest at the workspace root. */
+  manifest?: string | string[];
 }
 
 export type Gate =
@@ -128,10 +186,12 @@ export type Gate =
   | InstructionSyncGate
   | NotEmptyGate
   | NoNewGate
-  | NoDeletedGate;
+  | NoDeletedGate
+  | NoFewerGate
+  | DepsLockedGate;
 
 /** Gate types that compare the working tree to a git base ref. */
-export const DIFF_GATE_TYPES = new Set(["no-new", "no-deleted"]);
+export const DIFF_GATE_TYPES = new Set(["no-new", "no-deleted", "no-fewer"]);
 
 export interface Spec {
   /**
@@ -160,6 +220,9 @@ export const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 
 /** Default wall-clock budget for a complete run (5 minutes). */
 export const DEFAULT_RUN_TIMEOUT_MS = 300_000;
+
+/** Default per-file read cap for pattern gates (10 MiB). */
+export const DEFAULT_MAX_BYTES = 10 * 1024 * 1024;
 
 export const DEFAULT_SPEC_PATHS = [
   ".skillgate/done.yaml",
@@ -245,15 +308,30 @@ function validateRegex(pattern: unknown, flags: unknown, where: string): void {
   }
 }
 
+function validateWhen(value: unknown, where: string): void {
+  if (value == null) return;
+  const when = asRecord(value, where);
+  noUnknown(when, ["command", "changed", "branch"], where);
+  if (Object.keys(when).length === 0) throw new Error(`${where} must set at least one of command, changed, branch`);
+  for (const key of ["command", "changed", "branch"]) {
+    if (when[key] != null) stringArray(when[key], `${where}.${key}`);
+  }
+}
+
 function validateGate(value: unknown, index: number): void {
   const where = `gates[${index}]`;
   const gate = asRecord(value, where);
   nonEmptyString(gate.id, `${where}.id`);
   nonEmptyString(gate.type, `${where}.type`);
   optionalString(gate.description, `${where}.description`);
-  const base = ["id", "type", "description"];
+  validateWhen(gate.when, `${where}.when`);
+  const base = ["id", "type", "description", "when"];
   const allow = (...fields: string[]) => noUnknown(gate, [...base, ...fields], where);
   const timeout = () => { if (gate.timeout != null) positiveInteger(gate.timeout, `${where}.timeout`); };
+  const maxBytes = () => { if (gate.maxBytes != null) positiveInteger(gate.maxBytes, `${where}.maxBytes`); };
+  const allowEmpty = () => {
+    if (gate.allowEmpty != null && typeof gate.allowEmpty !== "boolean") throw new Error(`${where}.allowEmpty must be a boolean`);
+  };
   switch (gate.type) {
     case "file-exists":
       allow("file");
@@ -261,16 +339,20 @@ function validateGate(value: unknown, index: number): void {
       else nonEmptyString(gate.file, `${where}.file`);
       break;
     case "file-contains":
-      allow("file", "pattern", "flags");
+      allow("file", "pattern", "flags", "maxBytes");
       nonEmptyString(gate.file, `${where}.file`);
       validateRegex(gate.pattern, gate.flags, where);
+      maxBytes();
       break;
     case "absent":
     case "no-new":
-      allow("glob", "pattern", "flags", "ignore");
+    case "no-fewer":
+      allow("glob", "pattern", "flags", "ignore", "maxBytes", "allowEmpty");
       nonEmptyString(gate.glob, `${where}.glob`);
       validateRegex(gate.pattern, gate.flags, where);
       optionalStringArray(gate.ignore, `${where}.ignore`);
+      maxBytes();
+      allowEmpty();
       break;
     case "command":
       allow("run", "timeout");
@@ -313,9 +395,17 @@ function validateGate(value: unknown, index: number): void {
       if (gate.min != null) positiveInteger(gate.min, `${where}.min`);
       break;
     case "no-deleted":
-      allow("glob", "ignore");
+      allow("glob", "ignore", "allowEmpty");
       nonEmptyString(gate.glob, `${where}.glob`);
       optionalStringArray(gate.ignore, `${where}.ignore`);
+      allowEmpty();
+      break;
+    case "deps-locked":
+      allow("manifest");
+      if (gate.manifest != null) {
+        if (typeof gate.manifest === "string") nonEmptyString(gate.manifest, `${where}.manifest`);
+        else stringArray(gate.manifest, `${where}.manifest`);
+      }
       break;
     default:
       throw new Error(`${where}.type is unsupported: ${gate.type}`);

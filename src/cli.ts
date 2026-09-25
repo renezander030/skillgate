@@ -5,14 +5,14 @@ import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { findSpecPath, loadSpec, parseSpec, specRoot, DEFAULT_SPEC_PATHS, type Spec } from "./spec.js";
-import { runGates, decideCommand } from "./core.js";
+import { runGates, decideCommand, type GateResult, type RunResult } from "./core.js";
 import { checkDrift, formatDiff, DEFAULT_THRESHOLD, discover, pickCanonical } from "./drift.js";
 import { runSync } from "./link.js";
 import { runScaffold, listTemplates } from "./scaffold.js";
 import { doctor, installIntegration, INTEGRATION_TARGETS, type IntegrationTarget } from "./integrations.js";
 import { analyzeCommand } from "./command.js";
 import { readCachedResult, snapshotKey, writeCachedResult, writeReceipt } from "./receipt.js";
-import { resolveBaseRef, mergeBase, readFileAtRef, repoRelativePath, repoRoot } from "./git.js";
+import { resolveBaseRef, mergeBase, readFileAtRef, repoRelativePath, repoRoot, isClean } from "./git.js";
 import {
   createPrivatePassProof,
   generateKeyFiles,
@@ -91,8 +91,10 @@ Usage:
   skillgate zk-verify <proof>        verify a private pass proof against pinned inputs
   skillgate fhe-metrics              add private repo counts while they stay encrypted
   skillgate gate                     allow/block one command (any harness); exit 2 = block
+  skillgate gate --event stop        block an agent from ending its turn while gates fail
   skillgate init                     write an example .skillgate/done.yaml
-  skillgate install <target|all>     install Claude, OpenCode, CI, or pre-commit enforcement
+  skillgate install <target|all>     install agent hooks (claude-code, codex, gemini-cli, cursor,
+                                     opencode), github-actions, or pre-commit enforcement
   skillgate doctor <target|all>      verify policy discovery and one or more integrations
   skillgate explain --command <cmd>  show structural finish-line matching without running gates
   skillgate scaffold [--template]    generate .skillgate/evidence/ with stack templates
@@ -109,7 +111,12 @@ Flags:
                            working tree, so a change can't loosen its own gate
   --base <ref>             ref for diff-aware gates (no-new, no-deleted) and, with
                            --pin, the pinned spec. Default: SKILLGATE_BASE or origin/HEAD
-  --command "<cmd>"        gate: the command to judge (else read from stdin)
+  --command "<cmd>"        gate: the command to judge (else read from stdin);
+                           check: evaluate gates as required for this command (when.command)
+  --format <fmt>           check: github (workflow annotations on failures);
+                           gate: text, json, cursor, or gemini hook protocol
+  --event stop             gate: judge the agent's Stop event instead of a command
+  --stop                   install claude-code: also register the Stop hook
   --timeout <ms>           check: cap the complete gate run (overrides spec timeout)
   --cache                  check: reuse a passing result only for the exact repo snapshot
   --receipt <file>         check: write a machine-readable execution receipt
@@ -266,25 +273,30 @@ function resolveSpecAndBase(specPathHint: string | null): Resolved {
   return die(2, `--pin: no committed spec at ${gateBase!.slice(0, 12)} (looked for ${rels.join(", ")}) — commit your .skillgate/done.yaml to the base branch first (fail-closed)`);
 }
 
-/** Read the command an agent is about to run from stdin — raw, or from a hook JSON payload. */
-function readStdinCommand(): string {
-  if (process.stdin.isTTY) return "";
+/** Read a hook payload from stdin: parsed JSON when it is JSON, else the raw text. */
+function readStdinPayload(): { raw: string; data?: any } {
+  if (process.stdin.isTTY) return { raw: "" };
   let raw = "";
   try {
     raw = fs.readFileSync(0, "utf8").trim();
   } catch {
-    return "";
+    return { raw: "" };
   }
-  if (!raw) return "";
   if (raw.startsWith("{")) {
     try {
-      const o: any = JSON.parse(raw);
-      return String(o?.tool_input?.command ?? o?.command ?? o?.params?.command ?? o?.tool_input?.cmd ?? raw);
+      return { raw, data: JSON.parse(raw) };
     } catch {
-      return raw;
+      /* not JSON after all — treat as a raw command */
     }
   }
-  return raw;
+  return { raw };
+}
+
+/** The command an agent is about to run, from any supported hook payload or raw stdin. */
+function commandFromPayload(payload: { raw: string; data?: any }): string {
+  const o = payload.data;
+  if (!o) return payload.raw;
+  return String(o?.tool_input?.command ?? o?.command ?? o?.params?.command ?? o?.tool_input?.cmd ?? payload.raw);
 }
 
 function option(name: string): string | undefined {
@@ -303,6 +315,36 @@ function resolvedZKSpec(): Resolved {
     die(2, "no spec found — run `skillgate init` or pass a path immediately after the command");
   }
   return resolveSpecAndBase(specPath && fs.existsSync(specPath) ? specPath : null);
+}
+
+function printResults(results: GateResult[]): void {
+  for (const r of results) {
+    const mark = r.status === "skipped" ? c(C.dim, "−") : r.ok ? c(C.green, "✓") : c(C.red, "✗");
+    console.log(`  ${mark} ${r.id}  ${c(C.dim, r.reason)}`);
+  }
+}
+
+function applied(result: RunResult): number {
+  return result.results.filter((r) => r.status !== "skipped").length;
+}
+
+/** Escape a GitHub workflow-command value (`property` also escapes `:` and `,`). */
+function ghEscape(value: string, property = false): string {
+  let out = value.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+  if (property) out = out.replace(/:/g, "%3A").replace(/,/g, "%2C");
+  return out;
+}
+
+/** One `::error` annotation per failed gate, anchored to the file it names when known. */
+function githubAnnotations(result: RunResult, workspace: string): string[] {
+  return result.failed.map((f) => {
+    const props = [`title=${ghEscape(`skillgate: ${f.id}`, true)}`];
+    if (f.location) {
+      const file = repoRelativePath(workspace, path.resolve(workspace, f.location.file)) ?? f.location.file;
+      props.unshift(`file=${ghEscape(file, true)}`, ...(f.location.line ? [`line=${f.location.line}`] : []));
+    }
+    return `::error ${props.join(",")}::${ghEscape(f.reason)}`;
+  });
 }
 
 if (cmd === "zk-keygen") {
@@ -407,9 +449,11 @@ function integrationTargets(value: string | undefined): IntegrationTarget[] {
 
 if (cmd === "install") {
   const targets = integrationTargets(args[1]);
+  const stop = args.includes("--stop");
+  if (stop && !targets.includes("claude-code")) die(2, "--stop applies to the claude-code target");
   try {
     for (const target of targets) {
-      const result = installIntegration(target, cwd);
+      const result = installIntegration(target, cwd, { stop });
       console.log(`${result.changed ? c(C.green, "✓") : c(C.dim, "·")} ${target}  ${result.detail} (${path.relative(cwd, result.file)})`);
     }
     process.exit(0);
@@ -462,7 +506,8 @@ if (cmd === "audit") {
 
   let result;
   try {
-    result = runGates(loadSpec(specPath), usingDefaults ? cwd : specRoot(specPath));
+    // Built-in defaults guess at globs; a default that matches nothing here is not a finding.
+    result = runGates(loadSpec(specPath), usingDefaults ? cwd : specRoot(specPath), { allowEmptyGlobs: usingDefaults });
   } catch (e: any) {
     console.error(c(C.red, `skillgate: ${e.message}`));
     process.exit(2);
@@ -484,13 +529,10 @@ if (cmd === "audit") {
       : `  using ${path.relative(cwd, specPath) || specPath}`),
   );
   console.log("");
-  for (const r of result.results) {
-    const mark = r.ok ? c(C.green, "✓") : c(C.red, "✗");
-    console.log(`  ${mark} ${r.id}  ${c(C.dim, r.reason)}`);
-  }
+  printResults(result.results);
   console.log("");
   if (result.passed) {
-    console.log(c(C.green, `✓ all ${result.results.length} checks pass — nothing for your agent to cut here.`));
+    console.log(c(C.green, `✓ all ${applied(result)} checks pass — nothing for your agent to cut here.`));
     process.exit(0);
   }
   console.log(
@@ -511,13 +553,18 @@ if (cmd === "check") {
     process.exit(2);
   }
 
+  const format = option("--format");
+  if (format != null && format !== "github") die(2, `check --format supports: github`);
+  const forCommand = option("--command");
   let result;
   let pinnedTo: string | undefined;
   let cacheHit = false;
   let snapshot: string | undefined;
+  let workspace = cwd;
   try {
     const r = resolveSpecAndBase(specPath && fs.existsSync(specPath) ? specPath : null);
     pinnedTo = r.pinnedTo;
+    workspace = r.workspace;
     const timeoutArg = option("--timeout");
     const timeoutMs = timeoutArg == null ? undefined : Number(timeoutArg);
     if (timeoutArg != null && (!Number.isInteger(timeoutMs) || timeoutMs! < 1)) die(2, "--timeout must be a positive integer in milliseconds");
@@ -526,13 +573,14 @@ if (cmd === "check") {
     const receiptFile = receipt ? path.resolve(cwd, receipt) : undefined;
     const receiptRel = receiptFile ? path.relative(r.workspace, receiptFile).split(path.sep).join("/") : "";
     const snapshotIgnore = receiptRel && !receiptRel.startsWith("../") ? [receiptRel] : [];
-    if (cache || receipt) snapshot = snapshotKey({ ...r.spec, timeout: timeoutMs ?? r.spec.timeout }, r.workspace, r.gateBase, snapshotIgnore);
+    // The judged command changes which gates apply, so it is part of the snapshot.
+    if (cache || receipt) snapshot = snapshotKey({ ...r.spec, timeout: timeoutMs ?? r.spec.timeout, ...(forCommand != null ? { forCommand } : {}) } as Spec, r.workspace, r.gateBase, snapshotIgnore);
     const cached = cache && snapshot ? readCachedResult(r.workspace, snapshot) : null;
     if (cached) {
       result = cached;
       cacheHit = true;
     } else {
-      result = runGates(r.spec, r.workspace, { baseRef: r.gateBase, timeoutMs });
+      result = runGates(r.spec, r.workspace, { baseRef: r.gateBase, timeoutMs, command: forCommand });
       if (cache && snapshot) writeCachedResult(r.workspace, snapshot, result);
     }
     if (receiptFile && snapshot) writeReceipt(receiptFile, snapshot, result, cacheHit ? "cache" : "executed");
@@ -550,13 +598,12 @@ if (cmd === "check") {
     console.log(c(C.dim, `  policy pinned to ${pinnedTo.slice(0, 12)} (base ref) — this change cannot loosen it`));
   }
   if (cacheHit) console.log(c(C.dim, "  exact snapshot cache hit — reused prior passing receipt"));
-  for (const r of result.results) {
-    const mark = r.ok ? c(C.green, "✓") : c(C.red, "✗");
-    console.log(`  ${mark} ${r.id}  ${c(C.dim, r.reason)}`);
-  }
+  printResults(result.results);
   console.log("");
+  if (format === "github") for (const line of githubAnnotations(result, workspace)) console.log(line);
   if (result.passed) {
-    console.log(c(C.green, `✓ all ${result.results.length} gates passed`));
+    const skipped = result.results.length - applied(result);
+    console.log(c(C.green, `✓ all ${applied(result)} gates passed`) + (skipped ? c(C.dim, ` (${skipped} skipped by when)`) : ""));
     process.exit(0);
   }
   console.log(
@@ -681,39 +728,58 @@ if (cmd === "verify-patch" || cmd === "verify-apply") {
 
 if (cmd === "gate") {
   // Harness-neutral entrypoint: pipe in (or pass) the command an agent is about to
-  // run; get back allow/block. Works from a Claude Code PreToolUse hook, a Cursor/
-  // Codex/git wrapper, or a bare shell — enforcement no longer needs one harness's
-  // plugin API. Exit 0 = allow, 2 = block. Fails closed on error (unless --allow-on-error).
-  const cIdx = args.indexOf("--command");
-  const command = ((cIdx >= 0 ? args[cIdx + 1] : readStdinCommand()) ?? "").trim();
+  // run; get back allow/block. Works from Claude Code, Codex, Gemini CLI and Cursor
+  // hooks, a git wrapper, or a bare shell. Exit 0 = allow, 2 = block (the cursor and
+  // gemini formats answer in JSON on stdout instead). Fails closed on error unless
+  // --allow-on-error. `--event stop` judges the agent ending its turn instead.
+  const format = json ? "json" : (option("--format") ?? "text");
+  if (!["text", "json", "cursor", "gemini"].includes(format)) die(2, `gate --format must be text, json, cursor, or gemini`);
+  const event = option("--event") ?? "command";
+  if (!["command", "stop"].includes(event)) die(2, `gate --event must be command or stop`);
   const allowOnError = args.includes("--allow-on-error");
+  const payload = readStdinPayload();
+  const command = event === "stop" ? "" : ((option("--command") ?? commandFromPayload(payload)) ?? "").trim();
   const specPath = findSpecPath(cwd);
 
-  if (!pin && !specPath) {
-    // No definition of done configured: nothing to enforce, let it through.
-    const d = { decision: "allow", reason: "no skillgate spec — nothing to enforce", command };
-    console.log(json ? JSON.stringify(d, null, 2) : c(C.dim, `allow · ${d.reason}`));
-    process.exit(0);
-  }
+  /** Answer in the host's protocol and exit. */
+  const answer = (decision: "allow" | "block", reason: string, failed: GateResult[] = [], extra: Record<string, unknown> = {}): never => {
+    const details = failed.map((f) => `  · ${f.id}: ${f.reason}`).join("\n");
+    const guidance = event === "stop"
+      ? `skillgate: the work is not done — ${reason}.\n${details}\nFix these before you finish. Do not weaken or bypass the gates.`
+      : `skillgate blocked "${command}": ${reason}.\n${details}\nComplete the unmet gates, then retry.`;
+    if (format === "json") {
+      console.log(JSON.stringify({ decision, reason, command, event, ...extra }, null, 2));
+    } else if (format === "cursor") {
+      console.log(JSON.stringify(decision === "allow"
+        ? { permission: "allow" }
+        : { permission: "deny", user_message: `skillgate: ${reason}`, agent_message: guidance }));
+      process.exit(0);
+    } else if (format === "gemini") {
+      console.log(JSON.stringify(decision === "allow" ? { decision: "allow" } : { decision: "deny", reason: guidance }));
+      process.exit(0);
+    } else if (decision === "block") {
+      console.error(c(C.red, event === "stop" ? "✗ not done: " : "✗ blocked: ") + reason);
+      console.error(failed.length ? guidance.split("\n").slice(1).join("\n") : guidance);
+    } else {
+      console.log(c(C.green, "✓ allow") + c(C.dim, ` · ${reason}`));
+    }
+    process.exit(decision === "block" ? 2 : 0);
+  };
+
+  if (!pin && !specPath) answer("allow", "no skillgate spec — nothing to enforce");
 
   try {
     const r = resolveSpecAndBase(specPath && fs.existsSync(specPath) ? specPath : null);
-    const decision = decideCommand(r.spec, r.workspace, command, { baseRef: r.gateBase });
-    if (json) {
-      console.log(JSON.stringify({ ...decision, pinnedTo: r.pinnedTo }, null, 2));
-    } else if (decision.decision === "block") {
-      console.error(c(C.red, `✗ blocked: `) + decision.reason);
-      for (const f of decision.result?.failed ?? []) console.error(c(C.dim, `    · ${f.id}: ${f.reason}`));
-    } else {
-      console.log(c(C.green, `✓ allow`) + c(C.dim, ` · ${decision.reason}`));
+    if (event === "stop") {
+      if (isClean(r.workspace) === true) answer("allow", "no changes in the worktree — nothing to verify", [], { pinnedTo: r.pinnedTo });
+      const result = runGates(r.spec, r.workspace, { baseRef: r.gateBase });
+      if (result.passed) answer("allow", `all ${applied(result)} applicable gates passed`, [], { pinnedTo: r.pinnedTo, result });
+      answer("block", `${result.failed.length} of ${applied(result)} gates unmet: ${result.failed.map((f) => f.id).join(", ")}`, result.failed, { pinnedTo: r.pinnedTo, result });
     }
-    process.exit(decision.decision === "block" ? 2 : 0);
+    const decision = decideCommand(r.spec, r.workspace, command, { baseRef: r.gateBase });
+    answer(decision.decision, decision.reason, decision.result?.failed ?? [], { pinnedTo: r.pinnedTo, ...(decision.result ? { result: decision.result } : {}) });
   } catch (e: any) {
-    const decision = allowOnError ? "allow" : "block";
-    const payload = { decision, reason: `error: ${e.message}`, command };
-    if (json) console.log(JSON.stringify(payload, null, 2));
-    else console.error(c(allowOnError ? C.dim : C.red, `${decision}: ${payload.reason}`));
-    process.exit(allowOnError ? 0 : 2);
+    answer(allowOnError ? "allow" : "block", `error: ${e.message}`);
   }
 }
 

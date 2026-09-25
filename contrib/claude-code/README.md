@@ -21,6 +21,12 @@ cp <skillgate>/contrib/claude-code/done.yaml .skillgate/done.yaml
 Then merge [`settings.json`](settings.json) from this directory into your `.claude/settings.json` (create the file if it doesn't exist). Start Claude Code and try to commit unfinished work — the commit is blocked until the gates pass.
 
 On Windows, copy `skillgate-hook.ps1` instead and merge `settings.windows.json`.
+
+Both hook scripts fail closed: if the gate cannot run at all (npx missing, offline,
+registry error), they exit 2 and the command is blocked rather than allowed.
+`npx @reneza/skillgate install claude-code` writes an equivalent inline hook for
+you. Add `--stop` to also register a `Stop` hook that refuses to end the turn while
+gates fail.
 The PowerShell hook resolves `npx.cmd` explicitly, forwards the original hook JSON
 on stdin, and fails closed with exit 2 when Node/npm cannot be found.
 
