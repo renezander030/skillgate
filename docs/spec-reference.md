@@ -154,7 +154,8 @@ agents are reading different rulebooks. Run `skillgate sync` to fix, or
 
 These gates compare the working tree with the commit the change forked from
 (`--base <ref>`, `SKILLGATE_BASE`, or origin's default branch). Without a resolvable
-base they fail closed.
+base they fail closed. The one exception is a repository with no commits at all: its
+first commit is judged against the empty tree.
 
 ```yaml
 - id: no-new-skips               # count must not increase

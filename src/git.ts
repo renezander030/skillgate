@@ -72,7 +72,29 @@ export function resolveBaseRef(cwd: string, requested?: string): string | null {
   for (const ref of candidates) {
     if (refExists(cwd, ref)) return ref;
   }
+  // A repository with no commits at all has nothing a change could regress from,
+  // so the first commit is judged against the empty tree. Only when no base was
+  // asked for: an explicit ref that does not resolve still fails closed.
+  if (!requested?.trim() && !process.env.SKILLGATE_BASE?.trim() && hasNoCommits(cwd)) return EMPTY_TREE;
   return null;
+}
+
+/** Git's well-known empty tree object. */
+export const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/** Human label for a base ref in gate reasons. */
+export function baseLabel(ref: string): string {
+  return ref === EMPTY_TREE ? "the empty tree (no commits yet)" : ref.slice(0, 12);
+}
+
+/** True inside a git repository that has no commits on any ref. */
+function hasNoCommits(cwd: string): boolean {
+  try {
+    execFileSync("git", ["rev-parse", "--git-dir"], { cwd, ...GIT_OPTS });
+    return execFileSync("git", ["rev-list", "-n", "1", "--all"], { cwd, ...GIT_OPTS }).trim() === "";
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -82,6 +104,7 @@ export function resolveBaseRef(cwd: string, requested?: string): string | null {
  * it is judged by. Falls back to `ref` itself if no common ancestor is found.
  */
 export function mergeBase(cwd: string, ref: string): string {
+  if (ref === EMPTY_TREE) return ref;
   try {
     return execFileSync("git", ["merge-base", ref, "HEAD"], { cwd, ...GIT_OPTS }).trim();
   } catch {
