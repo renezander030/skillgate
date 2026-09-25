@@ -12,4 +12,10 @@ set +e
 printf '%s' "$payload" | npx --yes @reneza/skillgate@latest gate >&2
 status=$?
 set -e
-exit "$status"   # exit 2 = Claude Code blocks the tool call and returns stderr
+# exit 2 = Claude Code blocks the tool call and returns stderr. Any other failure
+# (npx missing, offline, registry error) would be non-blocking, so block instead.
+if [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then
+  echo "skillgate: gate could not run (exit $status); blocking (fail-closed)" >&2
+  status=2
+fi
+exit "$status"

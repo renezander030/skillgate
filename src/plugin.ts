@@ -35,7 +35,7 @@ export const SkillGate = async (ctx: any): Promise<Hooks> => {
       }
       if (!isFinishLine(command, spec.finishLine)) return;
 
-      const result = runGates(spec, specRoot(specPath));
+      const result = runGates(spec, specRoot(specPath), { command });
       if (!result.passed) {
         const detail = result.failed.map((f) => `${f.id} (${f.reason})`).join("; ");
         throw new Error(

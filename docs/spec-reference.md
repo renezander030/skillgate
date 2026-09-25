@@ -29,7 +29,8 @@ blocks agent hooks rather than being ignored.
 
 ## Gate types
 
-Every gate has an `id` (string, shown in output) and an optional `description`.
+Every gate has an `id` (string, shown in output), an optional `description`, and
+an optional [`when`](#conditional-gates-when) block.
 
 ### `file-exists`
 
@@ -67,6 +68,15 @@ Ideal for stray TODOs and committed secrets.
 ```
 
 `node_modules/`, `.git/`, and `dist/` are always ignored.
+
+A glob that matches no files fails the gate: a typo'd glob would otherwise pass
+forever as a no-op. Set `allowEmpty: true` when an empty match is expected. The
+same rule applies to `no-new`, `no-fewer` and `no-deleted`.
+
+Pattern gates (`file-contains`, `absent`, `no-new`, `no-fewer`) read at most
+`maxBytes` per file (default 10 MiB). A larger file fails the gate with its size
+rather than being skipped. Exclude it with `ignore` or raise `maxBytes`. They also
+stop at the run's `timeout` and report how many files they scanned.
 
 ### `command`
 
@@ -139,6 +149,77 @@ agents are reading different rulebooks. Run `skillgate sync` to fix, or
   type: instruction-sync
   threshold: 0.95              # optional, 0..1, default 0.95
 ```
+
+### `no-new`, `no-fewer`, `no-deleted` (diff-aware)
+
+These gates compare the working tree with the commit the change forked from
+(`--base <ref>`, `SKILLGATE_BASE`, or origin's default branch). Without a resolvable
+base they fail closed.
+
+```yaml
+- id: no-new-skips               # count must not increase
+  type: no-new
+  glob: "**/*.test.ts"
+  pattern: '\.(skip|only)\('
+
+- id: tests-kept                 # count must not decrease
+  type: no-fewer
+  glob: "**/*.test.ts"
+  pattern: '^\s*(it|test)\('
+
+- id: tests-not-deleted          # every file at the base must still exist
+  type: no-deleted
+  glob: "test/**"
+```
+
+`no-fewer` catches a suite made green by deleting test cases inside files that
+still exist, which `no-deleted` (whole files) and `no-new` (added skips) miss.
+
+### `deps-locked`
+
+Every dependency declared in a manifest must be present in its lockfile. A
+package that never resolved from a registry, such as a hallucinated name, cannot
+be in the lockfile, so this catches it offline and deterministically.
+
+```yaml
+- id: deps-locked
+  type: deps-locked
+  manifest: package.json        # optional; default: every supported manifest at the root
+```
+
+Supported: `package.json` with `package-lock.json`, `npm-shrinkwrap.json`,
+`pnpm-lock.yaml`, `yarn.lock` or `bun.lock` (dependencies, devDependencies and
+optionalDependencies; `file:`/`link:` specs are skipped), and `pyproject.toml`
+(`[project]` dependencies, optional dependencies and Poetry tables) with `uv.lock`,
+`poetry.lock` or `pdm.lock`. No manifest or no lockfile fails the gate.
+
+## Conditional gates (`when`)
+
+`when` limits where a gate applies. Every listed condition must hold. Within a
+list, any entry may match. A gate whose condition does not hold is reported as
+`skipped` and never blocks.
+
+```yaml
+- id: full-suite
+  type: command
+  run: npm run test:all
+  when:
+    command: ["git push", "npm publish"]  # required for push/publish, not every commit
+    changed: ["src/**", "package.json"]   # only if one of these changed vs the base
+    branch: ["main", "release/*"]         # only on these branches
+```
+
+- `command` is matched structurally like `finishLine`. `skillgate gate` judges the
+  agent's command. `skillgate check --command "git push"` evaluates as if for that
+  command. A plain `check` has no command, so every gate applies.
+- `changed` compares committed, staged, unstaged and untracked files against the
+  base ref.
+- `branch` uses `SKILLGATE_BRANCH`, else the checked-out branch, else the CI branch
+  (`GITHUB_HEAD_REF`, `GITHUB_REF_NAME`).
+
+A condition skillgate cannot decide (no base ref, no branch) runs the gate. An
+unknown never skips enforcement. Pin the policy with `--pin` so a change cannot
+add a `when` that exempts itself.
 
 ### `skillgate init` now defaults
 

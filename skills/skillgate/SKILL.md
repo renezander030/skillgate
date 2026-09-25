@@ -28,12 +28,15 @@ anything.
 ```bash
 npx @reneza/skillgate init                     # write a starter .skillgate/done.yaml
 npx @reneza/skillgate install claude-code      # fail-closed PreToolUse hook in .claude/settings.json
-npx @reneza/skillgate install all              # claude-code + opencode + github-actions + pre-commit
+npx @reneza/skillgate install claude-code --stop   # also refuse to end the turn while gates fail
+npx @reneza/skillgate install codex            # or gemini-cli, cursor: the same gate in each agent's hook
+npx @reneza/skillgate install all              # every agent hook + opencode + github-actions + pre-commit
 npx @reneza/skillgate doctor all               # policy + integration health check
 ```
 
-`install` is idempotent and pins generated npm commands to the installed version. Prefer
-it over hand-editing `.claude/settings.json`.
+`install` is idempotent, pins generated npm commands to the installed version, and writes
+hooks that block when the gate itself cannot run. Prefer it over hand-editing agent
+settings. If `doctor` says a hook "fails open", re-run `install` for that target.
 
 Layers are not equal, and the user should know which one they picked: a PreToolUse hook is
 fast feedback inside the loop and the agent's own environment can undo it; pre-commit is
@@ -47,6 +50,8 @@ npx @reneza/skillgate check                    # exit 1 if any gate fails
 npx @reneza/skillgate check --json             # machine-readable results
 npx @reneza/skillgate check --pin              # read the spec from the base ref, not the working tree
 npx @reneza/skillgate check --timeout 600000   # budget for the whole run
+npx @reneza/skillgate check --command "git push"   # only the gates required for that finish line
+npx @reneza/skillgate check --format github    # CI: annotate failing files on the PR
 npx @reneza/skillgate explain --command "git push"   # why a command does or does not hit the finish line
 ```
 
@@ -83,6 +88,14 @@ prefixes that trigger them (`git commit`, `git push`, `npm publish`).
 | `evidence` | a named `file` exists and is non-empty |
 | `not-empty` | a directory at `path` holds at least `min` entries |
 | `instruction-sync` | the agent instruction files still agree with the canonical one |
+| `no-new` | matches of `pattern` in `glob` did not increase versus the base ref |
+| `no-fewer` | matches of `pattern` in `glob` did not decrease versus the base ref (deleted test cases) |
+| `no-deleted` | every file matching `glob` at the base ref still exists |
+| `deps-locked` | every declared dependency is in the lockfile (catches invented packages) |
+
+Any gate can carry `when: { command: [...], changed: [...], branch: [...] }`. A gate whose
+condition does not hold is `skipped`. A glob that matches no files fails the gate unless
+it sets `allowEmpty: true`.
 
 Gates only see machine-observable output. For a step like "read the API docs first", have
 the agent write `.skillgate/evidence/research.md` while working and gate on that file —
@@ -104,4 +117,8 @@ npx @reneza/skillgate sync                  # make AGENTS.md canonical, link the
 
 - `check`: exit 0 pass, exit 1 at least one gate failed.
 - `gate`: exit 0 allow, exit 2 block. Fails closed on error unless `--allow-on-error`.
+  `--format cursor|gemini` answers in that agent's JSON instead.
+- `gate --event stop` blocking you means the work is not done: fix the listed gates before
+  you finish. Do not stop again without changing anything.
+- `skipped` gates did not apply (their `when` did not hold). They never block.
 - A gate that cannot start is reported as a blocking `not-run`, never as a pass.

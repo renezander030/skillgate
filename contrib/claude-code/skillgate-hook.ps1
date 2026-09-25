@@ -10,4 +10,9 @@ if (-not $npx) {
 $payload | & $npx.Source --yes "@reneza/skillgate@latest" gate
 $status = $LASTEXITCODE
 if ($null -eq $status) { exit 2 }
+if ($status -ne 0 -and $status -ne 2) {
+  # Any failure other than a gate block would be non-blocking; block instead.
+  [Console]::Error.WriteLine("skillgate: gate could not run (exit $status); blocking (fail-closed)")
+  exit 2
+}
 exit $status

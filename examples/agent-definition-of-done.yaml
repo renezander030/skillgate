@@ -60,3 +60,15 @@ gates:
     description: Public-facing or irreversible work leaves a human review note
     type: evidence
     file: ".skillgate/evidence/public-review.md"
+
+  - id: tests-not-removed
+    description: No test case was deleted to make the suite pass (diff-aware)
+    type: no-fewer
+    glob: "**/*.{test,spec}.{ts,js,tsx,jsx}"
+    pattern: '^\s*(it|test)(\.each)?\('
+    when:
+      command: ["git push"]
+
+  - id: deps-locked
+    description: Every declared dependency resolved into the lockfile
+    type: deps-locked
