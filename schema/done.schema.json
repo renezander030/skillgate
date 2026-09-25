@@ -22,6 +22,11 @@
       "description": "Commands that count as crossing the finish line. Patterns are matched structurally against shell command segments.",
       "items": { "type": "string", "minLength": 1 }
     },
+    "gatedTools": {
+      "type": "array",
+      "description": "Agent tool names (globs, e.g. mcp__course__publish_*) that also cross the finish line. Shell tools are judged by finishLine.",
+      "items": { "type": "string", "minLength": 1 }
+    },
     "timeout": {
       "type": "integer",
       "minimum": 1,
@@ -41,6 +46,7 @@
       "description": "Conditions under which the gate applies (all must hold). An undecidable condition runs the gate.",
       "properties": {
         "command": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "Finish-line command prefixes this gate is required for." },
+        "tool": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "Gated tool-name globs this gate is required for." },
         "changed": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "Run only if a file matching one of these globs changed versus the base ref." },
         "branch": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "Run only on a branch matching one of these globs." }
       }
@@ -275,6 +281,32 @@
               ],
               "description": "package.json or pyproject.toml path(s). Default: every supported manifest at the workspace root."
             }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "phases"],
+          "properties": {
+            "id": { "type": "string" },
+            "description": { "type": "string" },
+            "when": { "$ref": "#/definitions/when" },
+            "type": { "const": "phase" },
+            "phases": {
+              "type": "array",
+              "minItems": 1,
+              "description": "Phases in order. Being in a phase requires the gates listed by it and by every earlier phase to pass now.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id"],
+                "properties": {
+                  "id": { "type": "string" },
+                  "requires": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Ids of other (non-phase) gates in this spec." }
+                }
+              }
+            },
+            "current": { "type": "string", "description": "Plain-text file naming the active phase. Default .skillgate/phase; missing = the first phase." }
           }
         }
       ]

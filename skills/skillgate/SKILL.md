@@ -92,8 +92,9 @@ prefixes that trigger them (`git commit`, `git push`, `npm publish`).
 | `no-fewer` | matches of `pattern` in `glob` did not decrease versus the base ref (deleted test cases) |
 | `no-deleted` | every file matching `glob` at the base ref still exists |
 | `deps-locked` | every declared dependency is in the lockfile (catches invented packages) |
+| `phase` | the active phase's required gates, and every earlier phase's, pass now |
 
-Any gate can carry `when: { command: [...], changed: [...], branch: [...] }`. A gate whose
+Any gate can carry `when: { command: [...], tool: [...], changed: [...], branch: [...] }`. A gate whose
 condition does not hold is `skipped`. A glob that matches no files fails the gate unless
 it sets `allowEmpty: true`.
 
@@ -121,4 +122,16 @@ npx @reneza/skillgate sync                  # make AGENTS.md canonical, link the
 - `gate --event stop` blocking you means the work is not done: fix the listed gates before
   you finish. Do not stop again without changing anything.
 - `skipped` gates did not apply (their `when` did not hold). They never block.
+
+## Phases and gated tools
+
+```bash
+npx @reneza/skillgate phase                # each phase and whether its requirements pass
+npx @reneza/skillgate phase build          # move to build only if build's requirements pass
+```
+
+Move phases with `skillgate phase <id>`, never by editing `.skillgate/phase`: the
+marker is re-checked live, so a phase you have not earned fails at the next gate.
+`gatedTools` in the spec makes matching tool calls (MCP publish/deploy tools)
+finish lines too.
 - A gate that cannot start is reported as a blocking `not-run`, never as a pass.

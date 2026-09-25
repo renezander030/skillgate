@@ -6,7 +6,9 @@ import {
   type Spec,
   type Gate,
   type GateWhen,
+  type PhaseGate,
   type TrivyGate,
+  DEFAULT_PHASE_FILE,
   DEFAULT_COMMAND_TIMEOUT_MS,
   DEFAULT_MAX_BYTES,
   DEFAULT_NOT_EMPTY_MIN,
@@ -47,8 +49,64 @@ export interface RunOptions {
   remainingMs?: number;
   /** The finish-line command being judged, for `when.command`. Unset = every gate applies. */
   command?: string;
+  /** The agent tool call being judged (see `gatedTools`), for `when.tool`. */
+  tool?: string;
   /** Treat a glob that matches no files as a pass (built-in audit defaults only). */
   allowEmptyGlobs?: boolean;
+  /** Internal: every gate in the spec by id, for `phase` gates. */
+  gates?: Map<string, Gate>;
+  /** Internal: results already computed in this run, so a required gate runs once. */
+  memo?: Map<string, GateResult>;
+}
+
+export interface PhaseStatus {
+  /** The phase being evaluated. */
+  phase: string;
+  /** Required gates (cumulative through `phase`) that currently fail. */
+  failed: GateResult[];
+  /** Every required gate id, in phase order. */
+  required: string[];
+  error?: string;
+}
+
+/** Id of the active phase: the marker file's first line, or the first phase when there is none. */
+export function currentPhase(gate: PhaseGate, cwd: string): string {
+  const file = path.resolve(cwd, gate.current ?? DEFAULT_PHASE_FILE);
+  const text = fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim().split(/\r?\n/)[0]?.trim() : "";
+  return text || gate.phases[0].id;
+}
+
+/**
+ * Evaluate what being in `target` requires: every gate listed by that phase and by
+ * each earlier one must pass now. Stateless: nothing is read but the policy and
+ * the workspace, so an agent cannot mark a phase done without doing it.
+ */
+export function evaluatePhase(gate: PhaseGate, target: string, cwd: string, opts: RunOptions): PhaseStatus {
+  const index = gate.phases.findIndex((phase) => phase.id === target);
+  if (index < 0) {
+    return { phase: target, failed: [], required: [], error: `unknown phase ${target} (phases: ${gate.phases.map((p) => p.id).join(", ")})` };
+  }
+  const required = [...new Set(gate.phases.slice(0, index + 1).flatMap((phase) => phase.requires ?? []))];
+  const failed: GateResult[] = [];
+  for (const id of required) {
+    const dep = opts.gates?.get(id);
+    if (!dep) {
+      failed.push({ id, type: "missing", ok: false, reason: `no gate with id ${id}` });
+      continue;
+    }
+    const result = runOne(dep, cwd, opts);
+    if (!result.ok) failed.push(result);
+  }
+  return { phase: target, failed, required };
+}
+
+/** checkGate with the per-run memo, so a gate required by a phase is evaluated once. */
+function runOne(gate: Gate, cwd: string, opts: RunOptions): GateResult {
+  const cached = opts.memo?.get(gate.id);
+  if (cached) return cached;
+  const result = checkGate(gate, cwd, opts);
+  opts.memo?.set(gate.id, result);
+  return result;
 }
 
 const IGNORE = ["**/node_modules/**", "**/.git/**", "dist/**"];
@@ -345,6 +403,20 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
             }
           : { ...base, ok: true, reason: `no ${gate.glob} files deleted vs ${short} (${baseFiles.length} present)` };
       }
+      case "phase": {
+        const phase = currentPhase(gate, cwd);
+        const status = evaluatePhase(gate, phase, cwd, opts);
+        const marker = gate.current ?? DEFAULT_PHASE_FILE;
+        if (status.error) return { ...base, ok: false, reason: `${marker}: ${status.error}`, location: { file: marker } };
+        if (status.failed.length) {
+          return {
+            ...base,
+            ok: false,
+            reason: `phase ${phase} requires ${status.failed.map((f) => `${f.id} (${f.reason})`).join("; ")}`,
+          };
+        }
+        return { ...base, ok: true, reason: `in phase ${phase}; ${status.required.length} required gate(s) pass` };
+      }
       case "deps-locked": {
         const manifests = gate.manifest == null
           ? SUPPORTED_MANIFESTS.filter((m) => fs.existsSync(path.resolve(cwd, m)))
@@ -384,8 +456,16 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
  */
 function skipReason(when: GateWhen | undefined, cwd: string, opts: RunOptions, ctx: { changed?: string[] | null; branch?: string | null }): string | null {
   if (!when) return null;
-  if (when.command && opts.command != null && !isStructuredCommandMatch(opts.command, when.command)) {
-    return `skipped: not required for this command (when.command: ${when.command.join(", ")})`;
+  // A gate scoped to commands or tools applies only when the judged action is one of
+  // them. A plain `check` judges no action, so every gate applies.
+  if ((when.command || when.tool) && (opts.command != null || opts.tool != null)) {
+    const hit = opts.tool != null
+      ? !!when.tool?.some((glob) => matchesGlob(opts.tool!, glob))
+      : !!when.command && isStructuredCommandMatch(opts.command!, when.command);
+    if (!hit) {
+      const scope = [when.command && `when.command: ${when.command.join(", ")}`, when.tool && `when.tool: ${when.tool.join(", ")}`].filter(Boolean).join("; ");
+      return `skipped: not required for ${opts.tool != null ? `tool ${opts.tool}` : "this command"} (${scope})`;
+    }
   }
   if (when.branch) {
     if (ctx.branch === undefined) ctx.branch = currentBranch(cwd) ?? null;
@@ -408,6 +488,8 @@ export function runGates(spec: Spec, cwd: string, opts: RunOptions = {}): RunRes
   const timeoutMs = opts.timeoutMs ?? spec.timeout ?? DEFAULT_RUN_TIMEOUT_MS;
   const results: GateResult[] = [];
   const ctx: { changed?: string[] | null; branch?: string | null } = {};
+  const gates = new Map((spec.gates ?? []).map((gate) => [gate.id, gate]));
+  const memo = new Map<string, GateResult>();
   for (const gate of spec.gates ?? []) {
     const skipped = skipReason(gate.when, cwd, opts, ctx);
     if (skipped) {
@@ -428,7 +510,7 @@ export function runGates(spec: Spec, cwd: string, opts: RunOptions = {}): RunRes
       continue;
     }
     const gateStarted = Date.now();
-    const result = checkGate(gate, cwd, { ...opts, remainingMs });
+    const result = runOne(gate, cwd, { ...opts, remainingMs, gates, memo });
     results.push({
       ...result,
       status: result.ok ? "pass" : "fail",
@@ -437,6 +519,26 @@ export function runGates(spec: Spec, cwd: string, opts: RunOptions = {}): RunRes
   }
   const failed = results.filter((r) => !r.ok);
   return { passed: failed.length === 0, results, failed, durationMs: Date.now() - started, timeoutMs };
+}
+
+/** True when `tool` matches one of the spec's `gatedTools` globs. */
+export function isGatedTool(tool: string, patterns: string[] | undefined): boolean {
+  return !!patterns?.some((glob) => matchesGlob(tool, glob));
+}
+
+/** The verdict for an agent tool call (an MCP tool, say): gated tools are blocked until every applicable gate passes. */
+export function decideTool(spec: Spec, cwd: string, tool: string, opts: RunOptions = {}): Decision {
+  if (!isGatedTool(tool, spec.gatedTools)) return { decision: "allow", reason: "not a gated tool", command: tool };
+  const result = runGates(spec, cwd, { ...opts, tool, command: undefined });
+  const applied = result.results.filter((r) => r.status !== "skipped").length;
+  return result.passed
+    ? { decision: "allow", reason: `all ${applied} applicable gates passed`, command: tool, result }
+    : {
+        decision: "block",
+        reason: `${result.failed.length} of ${applied} gates unmet: ${result.failed.map((f) => f.id).join(", ")}`,
+        command: tool,
+        result,
+      };
 }
 
 /** True when `command` crosses one of the configured finish-line patterns. */

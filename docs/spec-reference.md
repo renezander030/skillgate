@@ -14,6 +14,7 @@ A spec is a YAML (or JSON) file. skillgate looks for it at, in order:
 | `name` | string | no | A label for this definition of done. |
 | `version` | integer | no | Spec format version. Omit for the current format. See [compatibility](compatibility.md). |
 | `timeout` | positive integer | no | Total wall-clock budget for one run in milliseconds. Defaults to 300000. |
+| `gatedTools` | string[] | no | Agent tool names (globs) that also cross the finish line, such as MCP tools. See [gated tools](#gated-tools). |
 
 `finishLine` uses structural shell matching. Each unquoted command segment is
 tokenized, common wrappers and executable suffixes are normalized, and the command
@@ -194,6 +195,55 @@ optionalDependencies; `file:`/`link:` specs are skipped), and `pyproject.toml`
 (`[project]` dependencies, optional dependencies and Poetry tables) with `uv.lock`,
 `poetry.lock` or `pdm.lock`. No manifest or no lockfile fails the gate.
 
+### `phase`
+
+Phases run in order (plan → build → review, say). To be in a phase, every gate
+listed in `requires` by that phase **and by every earlier phase** must pass right
+now. The gate reads the active phase from `current`, a plain-text file (default
+`.skillgate/phase`); no file means the first phase.
+
+```yaml
+- id: plan-written
+  type: file-exists
+  file: docs/plan.md
+- id: tests-pass
+  type: command
+  run: npm test --silent
+- id: phases
+  type: phase
+  phases:
+    - id: plan
+    - id: build
+      requires: [plan-written]
+    - id: review
+      requires: [tests-pass]
+```
+
+Nothing is recorded or signed: the marker only says where the agent claims to be,
+and every evaluation re-checks that claim against the workspace. Writing `review`
+into the marker without a plan or passing tests just makes the gate fail at the
+next finish line or gated tool. `requires` may name any non-phase gate in the spec;
+each required gate runs once per run.
+
+Move between phases with `skillgate phase <id>`: it writes the marker only if the
+target's requirements pass (exit 2 otherwise). `skillgate phase` alone shows each
+phase's status.
+
+## Gated tools
+
+`finishLine` gates shell commands. `gatedTools` gates any other agent tool by name,
+typically MCP tools that publish, deploy or send:
+
+```yaml
+gatedTools: ["mcp__course__publish_*"]
+```
+
+A call to a matching tool runs the gates like a finish-line command. Scope a gate
+to tools with `when.tool` (below). Hooks from `skillgate install claude-code`,
+`codex` and `gemini-cli` include these tools in their matcher, and `doctor` reports
+a hook that does not. The opencode plugin checks `gatedTools` in
+`tool.execute.before`. Cursor's hook covers shell commands only.
+
 ## Conditional gates (`when`)
 
 `when` limits where a gate applies. Every listed condition must hold. Within a
@@ -206,10 +256,13 @@ list, any entry may match. A gate whose condition does not hold is reported as
   run: npm run test:all
   when:
     command: ["git push", "npm publish"]  # required for push/publish, not every commit
+    tool: ["mcp__course__publish_*"]      # and for these gated tools
     changed: ["src/**", "package.json"]   # only if one of these changed vs the base
     branch: ["main", "release/*"]         # only on these branches
 ```
 
+- `command` and `tool` scope a gate to actions: when a command or a gated tool is
+  being judged, the gate applies only if it is listed in one of them.
 - `command` is matched structurally like `finishLine`. `skillgate gate` judges the
   agent's command. `skillgate check --command "git push"` evaluates as if for that
   command. A plain `check` has no command, so every gate applies.

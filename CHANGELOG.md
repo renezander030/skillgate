@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Added
+- `phase` gate: ordered phases, each with `requires` (ids of other gates). Being in a
+  phase requires the gates of that phase and every earlier one to pass when checked.
+  The active phase is read from a plain marker file (`.skillgate/phase` by default), and
+  no state is stored or signed, so a phase can't be claimed without doing the work.
+  `skillgate phase` shows each phase's status, and `skillgate phase <id>` moves to a phase
+  only if its requirements pass.
+- `gatedTools`: agent tool names (globs) that cross the finish line like `finishLine`
+  commands, such as MCP tools that publish or deploy. `skillgate gate` judges them from
+  the Claude Code, Codex and Gemini CLI hook payload (or `--tool <name>`), and the
+  opencode plugin checks them in `tool.execute.before`. `install` adds them to the hook
+  matcher, and `doctor` flags a hook that does not cover them.
+- `when.tool` scopes a gate to gated tools, alongside `when.command`.
+
+### Changed
+- In the opencode plugin, an invalid policy still blocks shell commands but no longer
+  blocks other tools, so the agent can still edit the policy to fix it.
+
 ## 0.10.1 - 2026-09-25
 
 ### Fixed

@@ -4,8 +4,8 @@ import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { findSpecPath, loadSpec, parseSpec, specRoot, DEFAULT_SPEC_PATHS, type Spec } from "./spec.js";
-import { runGates, decideCommand, type GateResult, type RunResult } from "./core.js";
+import { findSpecPath, loadSpec, parseSpec, specRoot, DEFAULT_SPEC_PATHS, DEFAULT_PHASE_FILE, type Spec, type PhaseGate } from "./spec.js";
+import { runGates, decideCommand, decideTool, currentPhase, evaluatePhase, type GateResult, type RunResult } from "./core.js";
 import { checkDrift, formatDiff, DEFAULT_THRESHOLD, discover, pickCanonical } from "./drift.js";
 import { runSync } from "./link.js";
 import { runScaffold, listTemplates } from "./scaffold.js";
@@ -92,6 +92,7 @@ Usage:
   skillgate fhe-metrics              add private repo counts while they stay encrypted
   skillgate gate                     allow/block one command (any harness); exit 2 = block
   skillgate gate --event stop        block an agent from ending its turn while gates fail
+  skillgate phase [<id>]             show phase status, or move to <id> if its gates pass
   skillgate init                     write an example .skillgate/done.yaml
   skillgate install <target|all>     install agent hooks (claude-code, codex, gemini-cli, cursor,
                                      opencode), github-actions, or pre-commit enforcement
@@ -116,6 +117,8 @@ Flags:
   --format <fmt>           check: github (workflow annotations on failures);
                            gate: text, json, cursor, or gemini hook protocol
   --event stop             gate: judge the agent's Stop event instead of a command
+  --tool <name>            gate: judge an agent tool call (gatedTools) instead of a command
+  --gate <id>              phase: which phase gate, when the spec has more than one
   --stop                   install claude-code: also register the Stop hook
   --timeout <ms>           check: cap the complete gate run (overrides spec timeout)
   --cache                  check: reuse a passing result only for the exact repo snapshot
@@ -272,6 +275,9 @@ function resolveSpecAndBase(specPathHint: string | null): Resolved {
   }
   return die(2, `--pin: no committed spec at ${gateBase!.slice(0, 12)} (looked for ${rels.join(", ")}) — commit your .skillgate/done.yaml to the base branch first (fail-closed)`);
 }
+
+/** Shell tool names across agents; their calls are judged as commands by `finishLine`. */
+const SHELL_TOOLS = new Set(["Bash", "bash", "run_shell_command", "shell", "local_shell", "exec_command"]);
 
 /** Read a hook payload from stdin: parsed JSON when it is JSON, else the raw text. */
 function readStdinPayload(): { raw: string; data?: any } {
@@ -726,6 +732,62 @@ if (cmd === "verify-patch" || cmd === "verify-apply") {
   process.exit(child.status ?? 1);
 }
 
+if (cmd === "phase") {
+  // Stateless phases: the marker only names where the agent is. Moving to a phase
+  // (and every gated action while in it) re-checks that phase's requirements live.
+  const target = args[1] && !args[1].startsWith("-") ? args[1] : undefined;
+  const specPath = findSpecPath(cwd);
+  if (!pin && !specPath) die(2, "no spec found — run `skillgate init`");
+  let r: Resolved;
+  try {
+    r = resolveSpecAndBase(specPath && fs.existsSync(specPath) ? specPath : null);
+  } catch (e: any) {
+    die(2, e.message);
+  }
+  const phaseGates = r.spec.gates.filter((g): g is PhaseGate => g.type === "phase");
+  const wanted = option("--gate");
+  const gate = wanted ? phaseGates.find((g) => g.id === wanted) : phaseGates.length === 1 ? phaseGates[0] : undefined;
+  if (!gate) {
+    die(2, wanted
+      ? `no phase gate with id ${wanted}`
+      : phaseGates.length ? `spec has ${phaseGates.length} phase gates — pass --gate <id>` : "spec has no phase gate");
+  }
+  const opts = { baseRef: r.gateBase, gates: new Map(r.spec.gates.map((g) => [g.id, g])), memo: new Map<string, GateResult>() };
+  const marker = path.resolve(r.workspace, gate.current ?? DEFAULT_PHASE_FILE);
+  const current = currentPhase(gate, r.workspace);
+
+  if (!target) {
+    const phases = gate.phases.map((p) => {
+      const status = evaluatePhase(gate, p.id, r.workspace, opts);
+      return { id: p.id, current: p.id === current, ok: status.failed.length === 0, failed: status.failed };
+    });
+    if (json) {
+      console.log(JSON.stringify({ gate: gate.id, current, phases }, null, 2));
+    } else {
+      for (const p of phases) {
+        const mark = p.ok ? c(C.green, "✓") : c(C.red, "✗");
+        const detail = p.ok ? "requirements pass" : p.failed.map((f) => `${f.id}: ${f.reason}`).join("; ");
+        console.log(`  ${mark} ${p.current ? c(C.bold, `${p.id} (current)`) : p.id}  ${c(C.dim, detail)}`);
+      }
+    }
+    process.exit(phases.find((p) => p.current)?.ok === false ? 1 : 0);
+  }
+
+  const status = evaluatePhase(gate, target, r.workspace, opts);
+  if (status.error) die(2, status.error);
+  if (status.failed.length) {
+    if (json) console.log(JSON.stringify({ gate: gate.id, from: current, to: target, moved: false, failed: status.failed }, null, 2));
+    console.error(c(C.red, `✗ cannot enter ${target}: `) + status.failed.map((f) => f.id).join(", "));
+    for (const f of status.failed) console.error(c(C.dim, `    · ${f.id}: ${f.reason}`));
+    process.exit(2);
+  }
+  fs.mkdirSync(path.dirname(marker), { recursive: true });
+  fs.writeFileSync(marker, target + "\n");
+  if (json) console.log(JSON.stringify({ gate: gate.id, from: current, to: target, moved: true, failed: [] }, null, 2));
+  else console.log(c(C.green, `✓ ${current} → ${target}`) + c(C.dim, ` · ${status.required.length} required gate(s) pass`));
+  process.exit(0);
+}
+
 if (cmd === "gate") {
   // Harness-neutral entrypoint: pipe in (or pass) the command an agent is about to
   // run; get back allow/block. Works from Claude Code, Codex, Gemini CLI and Cursor
@@ -738,7 +800,12 @@ if (cmd === "gate") {
   if (!["command", "stop"].includes(event)) die(2, `gate --event must be command or stop`);
   const allowOnError = args.includes("--allow-on-error");
   const payload = readStdinPayload();
-  const command = event === "stop" ? "" : ((option("--command") ?? commandFromPayload(payload)) ?? "").trim();
+  // A non-shell tool call (an MCP tool, say) is judged by `gatedTools`, not `finishLine`.
+  const payloadTool = typeof payload.data?.tool_name === "string" ? payload.data.tool_name : undefined;
+  const tool = event === "stop" || option("--command") != null
+    ? undefined
+    : option("--tool") ?? (payloadTool && !SHELL_TOOLS.has(payloadTool) ? payloadTool : undefined);
+  const command = event === "stop" ? "" : tool ?? ((option("--command") ?? commandFromPayload(payload)) ?? "").trim();
   const specPath = findSpecPath(cwd);
 
   /** Answer in the host's protocol and exit. */
@@ -746,7 +813,7 @@ if (cmd === "gate") {
     const details = failed.map((f) => `  · ${f.id}: ${f.reason}`).join("\n");
     const guidance = event === "stop"
       ? `skillgate: the work is not done — ${reason}.\n${details}\nFix these before you finish. Do not weaken or bypass the gates.`
-      : `skillgate blocked "${command}": ${reason}.\n${details}\nComplete the unmet gates, then retry.`;
+      : `skillgate blocked ${tool ? `tool ${tool}` : `"${command}"`}: ${reason}.\n${details}\nComplete the unmet gates, then retry.`;
     if (format === "json") {
       console.log(JSON.stringify({ decision, reason, command, event, ...extra }, null, 2));
     } else if (format === "cursor") {
@@ -776,7 +843,9 @@ if (cmd === "gate") {
       if (result.passed) answer("allow", `all ${applied(result)} applicable gates passed`, [], { pinnedTo: r.pinnedTo, result });
       answer("block", `${result.failed.length} of ${applied(result)} gates unmet: ${result.failed.map((f) => f.id).join(", ")}`, result.failed, { pinnedTo: r.pinnedTo, result });
     }
-    const decision = decideCommand(r.spec, r.workspace, command, { baseRef: r.gateBase });
+    const decision = tool
+      ? decideTool(r.spec, r.workspace, tool, { baseRef: r.gateBase })
+      : decideCommand(r.spec, r.workspace, command, { baseRef: r.gateBase });
     answer(decision.decision, decision.reason, decision.result?.failed ?? [], { pinnedTo: r.pinnedTo, ...(decision.result ? { result: decision.result } : {}) });
   } catch (e: any) {
     answer(allowOnError ? "allow" : "block", `error: ${e.message}`);

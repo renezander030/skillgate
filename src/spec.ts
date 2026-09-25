@@ -11,6 +11,8 @@ import { parse as parseYaml } from "yaml";
 export interface GateWhen {
   /** Finish-line command prefixes this gate is required for (structural match). */
   command?: string[];
+  /** Tool-name globs (see `gatedTools`) this gate is required for. */
+  tool?: string[];
   /** Globs; the gate runs only if a file matching one changed versus the base ref. */
   changed?: string[];
   /** Branch globs (`main`, `release/*`); the gate runs only on a matching branch. */
@@ -22,6 +24,25 @@ export interface BaseGate {
   id: string;
   description?: string;
   when?: GateWhen;
+}
+
+/** One step of a `phase` gate. */
+export interface Phase {
+  id: string;
+  /** Ids of other gates that must pass to be in this phase (and every later one). */
+  requires?: string[];
+}
+
+/**
+ * Phases run in order. To be in a phase, every gate required by that phase and by
+ * every earlier phase must pass right now. Evaluated live, so nothing is recorded
+ * and nothing can be self-attested: `current` only names the active phase.
+ */
+export interface PhaseGate extends BaseGate {
+  type: "phase";
+  phases: Phase[];
+  /** Plain-text marker naming the active phase. Default `.skillgate/phase`. Missing = the first phase. */
+  current?: string;
 }
 
 /** Shared options for gates that read file contents with a regex. */
@@ -188,7 +209,8 @@ export type Gate =
   | NoNewGate
   | NoDeletedGate
   | NoFewerGate
-  | DepsLockedGate;
+  | DepsLockedGate
+  | PhaseGate;
 
 /** Gate types that compare the working tree to a git base ref. */
 export const DIFF_GATE_TYPES = new Set(["no-new", "no-deleted", "no-fewer"]);
@@ -204,6 +226,11 @@ export interface Spec {
   name?: string;
   /** Commands that count as crossing the finish line (structural shell matching). */
   finishLine?: string[];
+  /**
+   * Agent tool names (globs) that also cross the finish line, e.g. MCP tools like
+   * `mcp__course__publish_*`. Shell tools are judged by `finishLine` instead.
+   */
+  gatedTools?: string[];
   /** Maximum wall-clock budget for one complete gate run. */
   timeout?: number;
   gates: Gate[];
@@ -220,6 +247,9 @@ export const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 
 /** Default wall-clock budget for a complete run (5 minutes). */
 export const DEFAULT_RUN_TIMEOUT_MS = 300_000;
+
+/** Default marker file for `phase` gates. */
+export const DEFAULT_PHASE_FILE = ".skillgate/phase";
 
 /** Default per-file read cap for pattern gates (10 MiB). */
 export const DEFAULT_MAX_BYTES = 10 * 1024 * 1024;
@@ -311,9 +341,9 @@ function validateRegex(pattern: unknown, flags: unknown, where: string): void {
 function validateWhen(value: unknown, where: string): void {
   if (value == null) return;
   const when = asRecord(value, where);
-  noUnknown(when, ["command", "changed", "branch"], where);
-  if (Object.keys(when).length === 0) throw new Error(`${where} must set at least one of command, changed, branch`);
-  for (const key of ["command", "changed", "branch"]) {
+  noUnknown(when, ["command", "tool", "changed", "branch"], where);
+  if (Object.keys(when).length === 0) throw new Error(`${where} must set at least one of command, tool, changed, branch`);
+  for (const key of ["command", "tool", "changed", "branch"]) {
     if (when[key] != null) stringArray(when[key], `${where}.${key}`);
   }
 }
@@ -400,6 +430,21 @@ function validateGate(value: unknown, index: number): void {
       optionalStringArray(gate.ignore, `${where}.ignore`);
       allowEmpty();
       break;
+    case "phase": {
+      allow("phases", "current");
+      optionalNonEmptyString(gate.current, `${where}.current`);
+      if (!Array.isArray(gate.phases) || gate.phases.length === 0) throw new Error(`${where}.phases must be a non-empty array`);
+      const seen = new Set<string>();
+      gate.phases.forEach((value, i) => {
+        const phase = asRecord(value, `${where}.phases[${i}]`);
+        noUnknown(phase, ["id", "requires"], `${where}.phases[${i}]`);
+        nonEmptyString(phase.id, `${where}.phases[${i}].id`);
+        if (seen.has(phase.id)) throw new Error(`${where}.phases contains duplicate id: ${phase.id}`);
+        seen.add(phase.id);
+        if (phase.requires != null) stringArray(phase.requires, `${where}.phases[${i}].requires`);
+      });
+      break;
+    }
     case "deps-locked":
       allow("manifest");
       if (gate.manifest != null) {
@@ -414,18 +459,30 @@ function validateGate(value: unknown, index: number): void {
 
 function validateSpec(value: unknown): asserts value is Spec {
   const spec = asRecord(value, "spec");
-  noUnknown(spec, ["version", "name", "finishLine", "timeout", "gates"], "spec");
+  noUnknown(spec, ["version", "name", "finishLine", "gatedTools", "timeout", "gates"], "spec");
   if (spec.version != null && (!Number.isInteger(spec.version) || Number(spec.version) < 1)) {
     throw new Error(`spec.version must be a positive integer`);
   }
   optionalString(spec.name, "spec.name");
   if (spec.finishLine != null) stringArray(spec.finishLine, "spec.finishLine", true);
+  if (spec.gatedTools != null) stringArray(spec.gatedTools, "spec.gatedTools", true);
   if (spec.timeout != null) positiveInteger(spec.timeout, "spec.timeout");
   if (!Array.isArray(spec.gates) || spec.gates.length === 0) throw new Error(`spec.gates must be a non-empty array`);
   spec.gates.forEach(validateGate);
   const ids = spec.gates.map((gate: any) => gate.id);
   const duplicate = ids.find((id, index) => ids.indexOf(id) !== index);
   if (duplicate) throw new Error(`spec.gates contains duplicate id: ${duplicate}`);
+  // A phase may only require plain gates that exist, so evaluation cannot recurse.
+  const types = new Map(spec.gates.map((gate: any) => [gate.id, gate.type]));
+  spec.gates.forEach((gate: any, index: number) => {
+    if (gate.type !== "phase") return;
+    for (const phase of gate.phases) {
+      for (const id of phase.requires ?? []) {
+        if (!types.has(id)) throw new Error(`gates[${index}].phases.${phase.id} requires unknown gate: ${id}`);
+        if (types.get(id) === "phase") throw new Error(`gates[${index}].phases.${phase.id} cannot require another phase gate: ${id}`);
+      }
+    }
+  });
 }
 
 /**
