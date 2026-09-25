@@ -271,6 +271,7 @@ A `file-contains` gate (e.g. require a touched changelog) and the other types ar
 | `no-fewer` | the count of `pattern` matches in `glob` did not **decrease** versus the base ref (test cases, assertions) |
 | `no-deleted` | every file matching `glob` at the base ref still exists |
 | `deps-locked` | every dependency declared in `package.json` / `pyproject.toml` is in the lockfile, so a hallucinated package can't slip in |
+| `phase` | the gates required by the active phase and every earlier one pass now (plan → build → review) |
 
 A glob that matches no files fails its gate instead of passing as a silent no-op
 (set `allowEmpty: true` when that is expected). Pattern gates fail on files over
@@ -291,6 +292,17 @@ on push or publish, and only when source changed:
 
 A condition skillgate cannot decide runs the gate. See the
 [spec reference](docs/spec-reference.md#conditional-gates-when).
+
+**Phases, checked live.** A `phase` gate orders work (plan → build → review) and
+requires each phase's gates, plus every earlier phase's, to pass at the moment
+they are checked. The active phase is a plain marker file, and
+`skillgate phase review` moves to review only if review's requirements pass. There
+is no stored state or signature to forge: claiming a phase without doing the work
+fails at the next check.
+
+**Gate MCP tools, not only shell commands.** `gatedTools: ["mcp__course__publish_*"]`
+treats those tool calls like finish-line commands, in Claude Code, Codex, Gemini
+CLI and opencode. `when.tool` scopes a gate to them.
 
 **Trivy security gate.** Add `type: trivy` when the finish line should stop on
 leaked secrets or critical CVEs. skillgate runs Trivy's secret scan separately

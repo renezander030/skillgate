@@ -60,6 +60,26 @@ export function gateCommand(extra = ""): string {
   return `npx --yes ${packageRef()} gate${extra}${FAIL_CLOSED}`;
 }
 
+/** Regex source for a tool-name glob (`*` any run, `?` one character). */
+export function toolGlobToRegex(glob: string): string {
+  return glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+}
+
+/** The policy's `gatedTools`, or none when there is no valid policy. */
+function gatedTools(root: string): string[] {
+  const spec = findSpecPath(root);
+  try {
+    return spec ? loadSpec(spec).gatedTools ?? [] : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Hook matcher: the agent's shell tool plus every gated tool, so the hook fires for both. */
+function toolMatcher(shell: string, root: string): string {
+  return [shell, ...gatedTools(root).map(toolGlobToRegex)].join("|");
+}
+
 type Upsert = "added" | "updated" | "unchanged";
 
 /** Add or replace this package's entry in one hook event list. */
@@ -91,7 +111,7 @@ function installClaude(cwd: string, opts: InstallOptions): InstallResult {
   const data = readJson(file);
   data.hooks ??= {};
   const outcomes = [upsertHook(data.hooks, "PreToolUse", {
-    matcher: "Bash",
+    matcher: toolMatcher("Bash", cwd),
     hooks: [{ type: "command", command: gateCommand(), timeout: HOOK_TIMEOUT_SECONDS }],
   }, file)];
   if (opts.stop) {
@@ -107,7 +127,7 @@ function installCodex(cwd: string): InstallResult {
   const data = readJson(file);
   data.hooks ??= {};
   const outcome = upsertHook(data.hooks, "PreToolUse", {
-    matcher: "Bash",
+    matcher: toolMatcher("Bash", cwd),
     hooks: [{ type: "command", command: gateCommand(), timeout: HOOK_TIMEOUT_SECONDS, statusMessage: "skillgate: checking definition of done" }],
   }, file);
   const result = hookResult("codex", file, [outcome], "PreToolUse hook", data);
@@ -120,7 +140,7 @@ function installGemini(cwd: string): InstallResult {
   const data = readJson(file);
   data.hooks ??= {};
   const outcome = upsertHook(data.hooks, "BeforeTool", {
-    matcher: "run_shell_command",
+    matcher: toolMatcher("run_shell_command", cwd),
     hooks: [{ name: "skillgate", type: "command", command: gateCommand(" --format gemini"), timeout: HOOK_TIMEOUT_SECONDS * 1000 }],
   }, file);
   return hookResult("gemini-cli", file, [outcome], "BeforeTool hook", data);
@@ -227,6 +247,13 @@ function fileContains(file: string, marker: string): boolean {
   return fs.existsSync(file) && fs.readFileSync(file, "utf8").includes(marker);
 }
 
+/** Gated tools a target's hook matcher does not include (only agents whose hooks match tool names). */
+function uncovered(target: IntegrationTarget, file: string, root: string): string[] {
+  if (!["claude-code", "codex", "gemini-cli"].includes(target)) return [];
+  const text = fs.readFileSync(file, "utf8");
+  return gatedTools(root).filter((glob) => !text.includes(JSON.stringify(toolGlobToRegex(glob)).slice(1, -1)));
+}
+
 export function doctor(cwd: string, targets: readonly IntegrationTarget[] = INTEGRATION_TARGETS): DoctorCheck[] {
   const checks: DoctorCheck[] = [];
   const spec = findSpecPath(cwd);
@@ -258,6 +285,8 @@ export function doctor(cwd: string, targets: readonly IntegrationTarget[] = INTE
       checks.push({ id: target, ok: false, detail: `not configured (${rel})` });
     } else if (failClosed && !fileContains(file, failClosed)) {
       checks.push({ id: target, ok: false, detail: `configured in ${rel} but fails open when the gate cannot run — re-run \`skillgate install ${target}\`` });
+    } else if (uncovered(target, file, root).length) {
+      checks.push({ id: target, ok: false, detail: `hook in ${rel} does not cover gatedTools ${uncovered(target, file, root).join(", ")} — re-run \`skillgate install ${target}\`` });
     } else {
       checks.push({ id: target, ok: true, detail: `configured in ${rel}` });
     }
