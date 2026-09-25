@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.11.0 - 2026-09-25
+
 ### Added
 - `phase` gate: ordered phases, each with `requires` (ids of other gates). Being in a
   phase requires the gates of that phase and every earlier one to pass when checked.
