@@ -430,6 +430,16 @@ Windows in CI.
 
 > **Private repo, Free account?** GitHub doesn't enforce branch protection on private repos under a Free personal plan — so the only *hard* layer above is unavailable. Get the same guarantee for free by running the evaluator somewhere the agent can't reach: a self-hosted server-side `pre-receive` gate on a [VM, a Docker container, or a small remote VPS](contrib/self-hosted-gate/). `git push --no-verify` can't skip a server hook, and the definition of done lives on a box the agent can't log into. Pick the substrate by how well your agent is already sandboxed — see [`contrib/self-hosted-gate`](contrib/self-hosted-gate/).
 
+**Worktrunk:** Skillgate works unchanged in [Worktrunk](https://worktrunk.dev/hook/)
+worktrees. Track `.skillgate/done.yaml` and add
+`pre-merge = "npx --yes @reneza/skillgate@0.11.0 check --base '{{ target }}'"`
+to `.config/wt.toml`. Worktrunk runs this blocking hook in the source worktree
+after rebasing and aborts the merge on a nonzero exit. Skillgate discovers that
+worktree's policy and evaluates paths relative to it, including when called from
+a nested directory. Install project dependencies in each worktree if your gates
+run project commands, and approve the hook on first use. Worktrunk hooks can be
+skipped locally; pair them with a required CI check for server-side enforcement.
+
 ### Not a husky replacement — what husky runs
 
 husky, lefthook, and pre-commit are **hook runners**: they wire a command to a git event. They don't know what "done" means; you tell them what to run. skillgate is the thing they run. If you already use husky, point its `pre-commit` at skillgate:

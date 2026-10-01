@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Documentation
+- Added a Worktrunk pre-merge hook recipe using the existing worktree-local policy
+  discovery, with an explicit merge target for diff-aware gates.
+
 ## 0.11.0 - 2026-09-25
 
 ### Added
