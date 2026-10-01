@@ -11,6 +11,7 @@ import { runSync } from "./link.js";
 import { runScaffold, listTemplates } from "./scaffold.js";
 import { doctor, installIntegration, INTEGRATION_TARGETS, type IntegrationTarget } from "./integrations.js";
 import { analyzeCommand } from "./command.js";
+import { reviewSnapshot } from "./review.js";
 import { readCachedResult, snapshotKey, writeCachedResult, writeReceipt } from "./receipt.js";
 import { resolveBaseRef, mergeBase, readFileAtRef, repoRelativePath, repoRoot, isClean } from "./git.js";
 import {
@@ -93,7 +94,8 @@ Usage:
   skillgate gate                     allow/block one command (any harness); exit 2 = block
   skillgate gate --event stop        block an agent from ending its turn while gates fail
   skillgate phase [<id>]             show phase status, or move to <id> if its gates pass
-  skillgate init                     write an example .skillgate/done.yaml
+  skillgate init [--preset no-secrets] write an example .skillgate/done.yaml
+  skillgate review-snapshot          print the snapshot to bind an optional review report to
   skillgate install <target|all>     install agent hooks (claude-code, codex, gemini-cli, cursor,
                                      opencode), github-actions, or pre-commit enforcement
   skillgate doctor <target|all>      verify policy discovery and one or more integrations
@@ -432,6 +434,8 @@ if (cmd === "zk-verify") {
 }
 
 if (cmd === "init") {
+  const preset = option("--preset");
+  if (args.includes("--preset") && preset !== "no-secrets") die(2, "unknown preset; available: no-secrets");
   const dir = path.join(cwd, ".skillgate");
   fs.mkdirSync(dir, { recursive: true });
   const target = path.join(dir, "done.yaml");
@@ -439,9 +443,37 @@ if (cmd === "init") {
     console.error(`${path.relative(cwd, target)} already exists`);
     process.exit(1);
   }
-  fs.writeFileSync(target, EXAMPLE);
+  const secretsSpec = `name: no-secrets
+finishLine: ["git commit", "git push", "npm publish"]
+gates:
+  - id: no-secrets
+    type: trufflehog
+    timeout: 10000
+    namesFile: .skillgate/forbidden-names.json
+`;
+  if (preset) {
+    const names = path.join(dir, "forbidden-names.json");
+    if (!fs.existsSync(names)) fs.writeFileSync(names, "[]\n", { mode: 0o600 });
+    const ignorePath = path.join(cwd, ".gitignore");
+    const ignore = fs.existsSync(ignorePath) ? fs.readFileSync(ignorePath, "utf8") : "";
+    const entries = ["/.skillgate/forbidden-names.json", "/.skillgate/scan-cache/"];
+    const missing = entries.filter(entry => !ignore.split(/\r?\n/).includes(entry));
+    if (missing.length) fs.appendFileSync(ignorePath, (ignore && !ignore.endsWith("\n") ? "\n" : "") + missing.join("\n") + "\n");
+  }
+  fs.writeFileSync(target, preset ? secretsSpec : EXAMPLE);
   console.log(`wrote ${path.relative(cwd, target)} — edit it, then \`skillgate check\``);
+  if (preset) console.log("Set local forbidden-names.json to a non-empty JSON array of server/domain/tenant names, or remove namesFile for credentials only.");
   process.exit(0);
+}
+
+if (cmd === "review-snapshot") {
+  try {
+    const resolved = resolveSpecAndBase(findSpecPath(cwd));
+    console.log(reviewSnapshot(resolved.spec, resolved.workspace, resolved.gateBase));
+    process.exit(0);
+  } catch {
+    die(2, "cannot read policy or repository snapshot for review");
+  }
 }
 
 function integrationTargets(value: string | undefined): IntegrationTarget[] {
@@ -574,7 +606,8 @@ if (cmd === "check") {
     const timeoutArg = option("--timeout");
     const timeoutMs = timeoutArg == null ? undefined : Number(timeoutArg);
     if (timeoutArg != null && (!Number.isInteger(timeoutMs) || timeoutMs! < 1)) die(2, "--timeout must be a positive integer in milliseconds");
-    const cache = args.includes("--cache");
+    // External state and private denylist files are not covered by the snapshot cache.
+    const cache = args.includes("--cache") && !r.spec.gates.some(gate => ["trufflehog", "review"].includes(gate.type));
     const receipt = option("--receipt");
     const receiptFile = receipt ? path.resolve(cwd, receipt) : undefined;
     const receiptRel = receiptFile ? path.relative(r.workspace, receiptFile).split(path.sep).join("/") : "";
@@ -752,7 +785,7 @@ if (cmd === "phase") {
       ? `no phase gate with id ${wanted}`
       : phaseGates.length ? `spec has ${phaseGates.length} phase gates — pass --gate <id>` : "spec has no phase gate");
   }
-  const opts = { baseRef: r.gateBase, gates: new Map(r.spec.gates.map((g) => [g.id, g])), memo: new Map<string, GateResult>() };
+  const opts = { baseRef: r.gateBase, spec: r.spec, gates: new Map(r.spec.gates.map((g) => [g.id, g])), memo: new Map<string, GateResult>() };
   const marker = path.resolve(r.workspace, gate.current ?? DEFAULT_PHASE_FILE);
   const current = currentPhase(gate, r.workspace);
 

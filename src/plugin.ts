@@ -32,8 +32,8 @@ export const SkillGate = async (ctx: any): Promise<Hooks> => {
       try {
         spec = loadSpec(specPath);
       } catch (e: any) {
-        // Shell commands fail closed. Other tools stay usable so the policy can be repaired.
-        if (tool !== "bash") return;
+        // Keep built-in repair tools usable; unknown/MCP tools may publish and must fail closed.
+        if (["read", "edit", "write", "apply_patch", "glob", "grep"].includes(tool)) return;
         throw new Error(`skillgate blocked tool execution: configured policy is invalid (${e.message})`);
       }
       // Shell commands cross the finish line by `finishLine`; any other tool by `gatedTools`.

@@ -19,6 +19,8 @@ import { readFileAtRef, listFilesAtRef, matchesGlob, changedFiles, currentBranch
 import { checkManifest, SUPPORTED_MANIFESTS } from "./deps.js";
 import { isStructuredCommandMatch } from "./command.js";
 import { runShellCommand } from "./process.js";
+import { checkSecrets } from "./secrets.js";
+import { checkReview } from "./review.js";
 
 export interface GateResult {
   id: string;
@@ -57,6 +59,7 @@ export interface RunOptions {
   gates?: Map<string, Gate>;
   /** Internal: results already computed in this run, so a required gate runs once. */
   memo?: Map<string, GateResult>;
+  spec?: Spec;
 }
 
 export interface PhaseStatus {
@@ -300,6 +303,10 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
       }
       case "trivy":
         return checkTrivyGate(gate, cwd, opts.remainingMs);
+      case "trufflehog":
+        return { ...base, ...checkSecrets(gate, cwd, opts.remainingMs) };
+      case "review":
+        return { ...base, ...checkReview(gate.file, opts.spec ?? { gates: [gate] }, cwd, opts.baseRef) };
       case "evidence": {
         const full = path.resolve(cwd, gate.file);
         if (!fs.existsSync(full)) return { ...base, ok: false, reason: `evidence missing: ${gate.file}`, location: { file: gate.file } };
@@ -510,7 +517,7 @@ export function runGates(spec: Spec, cwd: string, opts: RunOptions = {}): RunRes
       continue;
     }
     const gateStarted = Date.now();
-    const result = runOne(gate, cwd, { ...opts, remainingMs, gates, memo });
+    const result = runOne(gate, cwd, { ...opts, remainingMs, gates, memo, spec });
     results.push({
       ...result,
       status: result.ok ? "pass" : "fail",

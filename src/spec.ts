@@ -92,6 +92,21 @@ export interface CommandGate extends BaseGate {
   timeout?: number;
 }
 
+/** Optional external credential scanner, plus a local literal-name denylist. */
+export interface TrufflehogGate extends BaseGate {
+  type: "trufflehog";
+  trufflehog?: string;
+  namesFile?: string;
+  timeout?: number;
+  maxBytes?: number;
+}
+
+/** A completed OCR/delegated review bound to the current workspace snapshot. */
+export interface ReviewGate extends BaseGate {
+  type: "review";
+  file: string;
+}
+
 /** Trivy must find no leaked secrets and no vulnerabilities at or above severity. */
 export interface TrivyGate extends BaseGate {
   type: "trivy";
@@ -203,6 +218,8 @@ export type Gate =
   | AbsentGate
   | CommandGate
   | TrivyGate
+  | TrufflehogGate
+  | ReviewGate
   | EvidenceGate
   | InstructionSyncGate
   | NotEmptyGate
@@ -409,6 +426,17 @@ function validateGate(value: unknown, index: number): void {
       timeout();
       break;
     }
+    case "trufflehog":
+      allow("trufflehog", "namesFile", "timeout", "maxBytes");
+      optionalNonEmptyString(gate.trufflehog, `${where}.trufflehog`);
+      optionalNonEmptyString(gate.namesFile, `${where}.namesFile`);
+      timeout();
+      maxBytes();
+      break;
+    case "review":
+      allow("file");
+      nonEmptyString(gate.file, `${where}.file`);
+      break;
     case "evidence":
       allow("file");
       nonEmptyString(gate.file, `${where}.file`);
