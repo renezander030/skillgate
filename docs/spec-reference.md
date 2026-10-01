@@ -30,6 +30,11 @@ blocks agent hooks rather than being ignored.
 
 ## Gate types
 
+`trufflehog` adds optional verified credential scanning and a private literal-name
+denylist. `review` consumes a completed report bound to the current working/staged
+snapshot. Their fields, setup, and trust limits are documented in
+[secrets and optional review](external-gates.md).
+
 Every gate has an `id` (string, shown in output), an optional `description`, and
 an optional [`when`](#conditional-gates-when) block.
 

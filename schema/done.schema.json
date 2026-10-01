@@ -63,6 +63,33 @@
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["id", "type"],
+          "properties": {
+            "id": { "type": "string" },
+            "description": { "type": "string" },
+            "when": { "$ref": "#/definitions/when" },
+            "type": { "const": "trufflehog" },
+            "trufflehog": { "type": "string", "minLength": 1 },
+            "namesFile": { "type": "string", "minLength": 1 },
+            "timeout": { "type": "integer", "minimum": 1 },
+            "maxBytes": { "type": "integer", "minimum": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "file"],
+          "properties": {
+            "id": { "type": "string" },
+            "description": { "type": "string" },
+            "when": { "$ref": "#/definitions/when" },
+            "type": { "const": "review" },
+            "file": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["id", "type", "file"],
           "properties": {
             "id": { "type": "string" },

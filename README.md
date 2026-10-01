@@ -99,7 +99,11 @@ Prompt-level fixes ("always follow the process") do not close the gap, because t
 
 ![How skillgate works: an AI agent tries to commit, skillgate runs deterministic gates outside the model, and blocks the finish line until every gate passes](assets/skillgate-flow.png)
 
-The check is a **pure function over the filesystem**: same inputs, same verdict, in milliseconds, with no model in the loop. That is the whole point. An LLM asked "is this done?" answers differently depending on the weather and has an incentive to say yes. A script does not. Because the judge is model-independent, it works the same whatever model you have plugged into your agent.
+The default filesystem checks produce the same verdict for the same inputs, with
+no model in the evaluator. Commands and optional credential verification may
+depend on external state. The optional review gate checks a report supplied by a
+trusted reviewer; it is an attestation with a different trust boundary. The gate
+engine remains independent of the model plugged into your agent.
 
 ## Gate, not loop
 
@@ -173,6 +177,11 @@ an allow. `doctor` flags a hook installed by an older version that would fail
 open. Re-running `install` upgrades it in place.
 
 ## Define your gates
+
+Use `skillgate init --preset no-secrets` for credential and private infrastructure
+checks. An optional `review` gate accepts a snapshot-bound OCR or host-agent
+report. See [secrets and optional review](docs/external-gates.md) for setup, limits,
+and reviewer trust. Both integrations are optional.
 
 A gate is one deterministic, machine-checkable condition. Run `npx @reneza/skillgate init` to drop a starter `.skillgate/done.yaml` that includes drift detection and an evidence-gate example right out of the box, then run `skillgate scaffold` to generate the evidence file templates the agent must fill in:
 

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.12.0 - 2026-10-01
+
+### Added
+- `init --preset no-secrets` and optional `trufflehog` gate with verified credential
+  detection, a private literal infrastructure-name denylist, staged-file checks,
+  bounded execution, and redacted output. TruffleHog remains an external optional binary.
+- Optional `review` report gate and `review-snapshot` command for OCR-managed or
+  delegated reviews. Reports must complete without findings or warnings and match
+  the working/staged snapshot. This is explicitly a trusted reviewer attestation.
+- Processbench-style real-PR regression evidence and external-gate setup documentation.
+
+### Fixed
+- Invalid opencode policies now block unknown/MCP publish tools while keeping
+  built-in file-repair tools available.
+- External gates always re-evaluate with `--cache`; phase evaluation carries the
+  complete policy when checking a review report.
+
 ## 0.11.0 - 2026-09-25
 
 ### Added
