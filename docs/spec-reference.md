@@ -121,8 +121,8 @@ unfixed CVEs.
 ### `evidence`
 
 The escape hatch for steps that are not machine-observable ("research X first"): the
-agent writes a named file as it works, and the gate verifies the file exists and is
-non-empty.
+agent writes a named file as it works, and the gate verifies it is a non-empty
+regular file. Directories and unreadable paths fail the check.
 
 ```yaml
 - id: research-recorded
@@ -162,6 +162,12 @@ These gates compare the working tree with the commit the change forked from
 (`--base <ref>`, `SKILLGATE_BASE`, or origin's default branch). Without a resolvable
 base they fail closed. The one exception is a repository with no commits at all: its
 first commit is judged against the empty tree.
+
+An explicit `--base` or `SKILLGATE_BASE` must resolve; Skillgate never replaces a
+misspelled request with another branch. Unreadable baseline trees fail the gate,
+and unrelated histories cannot supply a common ancestor. Globs use the same
+syntax for on-disk and historical paths, including braces, character classes,
+and extglobs. Historical reads are scoped to the policy's workspace.
 
 ```yaml
 - id: no-new-skips               # count must not increase
@@ -329,12 +335,23 @@ current Git worktree root. Gates run relative to the directory that owns the pol
 so calling `skillgate check` from a nested package cannot accidentally use paths from
 the main checkout or a parent repository.
 
-The run budget applies across all gates. A per-command `timeout` is capped by the
+The run budget applies across all gates and cumulative phase requirements. A per-command `timeout` is capped by the
 remaining total budget, and a timed-out command's supervised process tree is
 terminated. Any gates that could not start are returned as blocking `not-run`
 results, preserving one result per configured gate.
+Commands have a combined 8 MiB output cap. On Unix, completion also terminates
+background descendants in the shell's process group; command gates should finish
+their work before exiting. Windows timeout cleanup uses `taskkill /T` when available.
 
 `skillgate check --receipt <file>` writes a versioned JSON receipt with the workspace
 snapshot, per-gate status/reason/duration, and total budget. `--cache` stores a passing
 receipt outside the working tree and reuses it only for the same parsed policy,
-runtime, base commit, and repository snapshot. Failing results are never cached.
+runtime, base commit, branch/index state, and repository snapshot, including
+explicit ignored gate inputs and symlink file contents. Failing or malformed
+results are never reused. A workspace change during evaluation blocks a passing
+receipt. Receipt outputs must not overlap gate input paths or globs.
+
+Cache reuse applies to local file, directory, pattern, diff, and phase checks.
+Commands, Trivy, TruffleHog, reviews, instruction selection, and dependency checks
+always execute again because their complete inputs are not represented by the
+snapshot. With `--json`, `cacheDisabledReason` explains a requested cache bypass.

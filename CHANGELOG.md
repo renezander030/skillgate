@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+## 0.13.0 - 2026-10-03
+
+### Fixed
+- Phase requirements share the complete run's remaining time budget. Command
+  output is capped before supervisor overflow, and completed Unix shells clean
+  up background descendants. Installed agent hooks pass an internal run timeout
+  below the host hook's timeout.
+- Invalid explicitly requested Git baselines and unreadable historical trees
+  fail closed instead of falling back to another branch or an empty file set.
+  Unrelated histories require a usable common ancestor.
+- Passing-result caches re-evaluate commands, security scanners, reviews,
+  instruction selection, and dependency checks. Local snapshots include ignored
+  gate inputs, branch/index state, and symlink file contents; malformed cache
+  records are ignored. Receipts cannot overwrite gate inputs, and runs that
+  change their snapshot cannot produce a passing receipt.
+- Pre-commit hooks run on deletion-only commits. Reinstallation upgrades the
+  existing Skillgate hook, preserves command flags, hook stages and other hooks,
+  and `doctor` flags old wiring.
+- Installed Claude Stop hooks use stdout JSON decisions, including a blocking
+  fallback if the gate cannot launch. Missing-file diagnostics remain blocking.
+- Hook installation is serialized per project, and complete configuration files
+  are replaced atomically with their existing permissions preserved.
+- Historical path matching uses the same glob syntax as disk scans, including
+  character classes, extglobs, and newline-containing filenames.
+- Nested workspace checks read historical contents using Git-root-relative paths.
+- Evidence and pattern checks reject directories and unreadable file inputs.
+
+### Breaking
+- Re-run `skillgate install <target>` to upgrade existing hook commands. For a
+  Claude Stop hook, use `skillgate install claude-code --stop`.
+- `--cache` reports why fresh evaluation is required for gates with inputs outside
+  its local snapshot. Choose receipt outputs outside the policy's input paths and
+  globs, or exclude the output directory with the gate's `ignore` option.
+- Correct invalid `--base` / `SKILLGATE_BASE` values and replace directory-shaped
+  evidence with non-empty regular files.
+
 ## 0.12.0 - 2026-10-01
 
 ### Added

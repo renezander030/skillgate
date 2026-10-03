@@ -170,11 +170,21 @@ skillgate doctor claude-code       # validates policy discovery and hook registr
 existing agent settings, refuses to overwrite unrelated workflows, and pins
 generated npm commands to the installed Skillgate version.
 
+Pre-commit installation includes deletion-only commits and upgrades an existing
+Skillgate hook when re-run. Installations are serialized per project and replace
+complete config files atomically while preserving existing permissions and other
+hooks. If another installation is active, retry after it finishes.
+
 Agent hooks are installed **fail-closed**: if the gate itself cannot run (npx
 missing, offline, registry error), the hook blocks instead of letting the command
 through, and it gets a 10-minute budget so a slow test suite doesn't time out into
 an allow. `doctor` flags a hook installed by an older version that would fail
 open. Re-running `install` upgrades it in place.
+
+Generated hooks give the evaluator a nine-minute run budget inside the ten-minute
+host timeout. Claude Stop hooks use explicit stdout JSON decisions, so test output
+such as a missing-file error cannot turn a block into a non-blocking hook error.
+Upgrade an existing Stop hook with `skillgate install claude-code --stop`.
 
 ## Define your gates
 

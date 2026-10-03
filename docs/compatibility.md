@@ -33,6 +33,12 @@ These are stable; tools may rely on them.
 | `1` | A gate failed / drift detected — the finish line is blocked |
 | `2` | Usage error: no spec found, unknown command, spec failed to load |
 
+Hook-specific output protocols (`gate --format cursor`, `gemini`, or
+`claude-stop`) exit 0 after emitting the host's allow/block JSON. The default
+text and generic `--json` gate modes retain exit 0 for allow and exit 2 for block.
+`claude-stop` requires `--event stop` and emits `{}` for allow or
+`{"decision":"block","reason":"..."}` for block.
+
 ## How deprecations happen
 
 1. **Deprecate before removing.** A gate field or flag that is going away is first
