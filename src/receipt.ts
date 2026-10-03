@@ -7,6 +7,7 @@ import type { RunResult } from "./core.js";
 import type { Spec } from "./spec.js";
 import { globSync } from "tinyglobby";
 import { currentBranch, matchesGlob } from "./git.js";
+import { findDependencyLockfile } from "./deps.js";
 
 const SCAN_IGNORE = ["**/node_modules/**", "**/.git/**", "dist/**"];
 const CACHE_TYPES = new Set(["file-exists", "file-contains", "evidence", "not-empty", "absent", "no-new", "no-fewer", "no-deleted", "phase"]);
@@ -34,6 +35,8 @@ function gateFiles(spec: Spec, cwd: string): string[] {
       for (const file of manifests) {
         add(file);
         for (const lock of ["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "uv.lock", "poetry.lock", "pdm.lock"]) add(path.join(path.dirname(file), lock));
+        const selected = findDependencyLockfile(path.resolve(cwd, file));
+        if (selected) add(selected);
       }
     }
   }
