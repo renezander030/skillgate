@@ -132,7 +132,8 @@ test("pre-commit installation upgrades deletion-only coverage and preserves unre
   assert.equal(hooks[1].pass_filenames, false);
   assert.equal(hooks[1].custom, "preserved");
   assert.equal(hooks[1].name, "pinned project policy");
-  assert.match(hooks[1].entry, /npx '@reneza\/skillgate@0\.13\.0' check --pin --base main$/);
+  const version = JSON.parse(fs.readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
+  assert.equal(hooks[1].entry, `npx '@reneza/skillgate@${version}' check --pin --base main`);
   assert.deepEqual(hooks[1].stages, ["pre-push", "pre-commit"]);
   assert.equal(doctor(dir, ["pre-commit"]).at(-1)?.ok, true);
   assert.equal(installIntegration("pre-commit", dir).changed, false);

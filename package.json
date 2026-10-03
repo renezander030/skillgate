@@ -1,6 +1,6 @@
 {
   "name": "@reneza/skillgate",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "publishConfig": {
     "access": "public"
   },
@@ -67,6 +67,7 @@
   "dependencies": {
     "@mattrglobal/pairing-crypto": "^0.4.2",
     "picomatch": "^4.0.7",
+    "smol-toml": "^1.9.0",
     "tinyglobby": "^0.2.10",
     "yaml": "^2.6.0"
   },

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.13.1 - 2026-10-03
+
+### Fixed
+- Dependency checks parse Python manifests and lockfiles as TOML, include standard
+  dependency groups and every Poetry group, and validate group includes. Invalid
+  structures, unknown groups, duplicate normalized names and cycles fail closed.
+- pnpm checks use the manifest's own importer, preventing dependencies from
+  another workspace from satisfying the gate. Nested manifests discover shared
+  workspace lockfiles, which also participate in receipt snapshots. Adjacent
+  lockfiles and legacy flat root locks retain their existing precedence.
+
 ## 0.13.0 - 2026-10-03
 
 ### Fixed

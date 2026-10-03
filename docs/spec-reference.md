@@ -203,8 +203,20 @@ be in the lockfile, so this catches it offline and deterministically.
 Supported: `package.json` with `package-lock.json`, `npm-shrinkwrap.json`,
 `pnpm-lock.yaml`, `yarn.lock` or `bun.lock` (dependencies, devDependencies and
 optionalDependencies; `file:`/`link:` specs are skipped), and `pyproject.toml`
-(`[project]` dependencies, optional dependencies and Poetry tables) with `uv.lock`,
-`poetry.lock` or `pdm.lock`. No manifest or no lockfile fails the gate.
+(`[project]` dependencies, optional dependencies, `[dependency-groups]`, and all
+Poetry dependency groups) with `uv.lock`, `poetry.lock` or `pdm.lock`. Python
+manifests and lockfiles are parsed as TOML, so comments and unrelated metadata
+cannot supply package names. Dependency-group includes resolve normalized names;
+unknown groups, cycles, malformed entries and duplicate normalized group names
+fail closed.
+
+For pnpm, only the manifest's importer can satisfy its dependencies. Nested
+manifests can use the nearest ancestor's shared `pnpm-lock.yaml`; importer keys
+are relative to the lockfile directory. Lookup stops at a nested pnpm workspace
+boundary without a lockfile. Adjacent lockfiles retain precedence, and legacy
+flat pnpm locks remain supported for the root manifest. Receipts include the
+selected shared lockfile even when it sits outside the policy directory.
+No manifest or no lockfile fails the gate.
 
 ### `phase`
 
