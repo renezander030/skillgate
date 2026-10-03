@@ -213,11 +213,14 @@ function installPreCommit(cwd: string): InstallResult {
   if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error(`${file}: expected a YAML object`);
   data.repos ??= [];
   if (!Array.isArray(data.repos)) throw new Error(`${file}: repos must be an array`);
+  const packagePattern = /@reneza\/skillgate(?:@[^\s"';&|]+)?(?=\s|["';&|]|$)/;
   const owned = data.repos.flatMap((repo: any) => repo?.repo === "local" && Array.isArray(repo.hooks) ? repo.hooks : [])
-    .find((hook: any) => hook?.id === "skillgate" && typeof hook.entry === "string" && hook.entry.includes("@reneza/skillgate"));
+    .find((hook: any) => hook?.id === "skillgate" && typeof hook.entry === "string" && packagePattern.test(hook.entry));
   const wanted = {
-    id: "skillgate", name: "skillgate definition-of-done", entry: `npx --yes ${packageRef()} check`,
-    language: "system", pass_filenames: false, always_run: true, stages: ["pre-commit"],
+    id: "skillgate", name: owned?.name ?? "skillgate definition-of-done",
+    entry: owned ? owned.entry.replace(packagePattern, packageRef()) : `npx --yes ${packageRef()} check`,
+    language: "system", pass_filenames: false, always_run: true,
+    stages: [...new Set([...(Array.isArray(owned?.stages) ? owned.stages : []), "pre-commit"])],
   };
   const changed = !owned || Object.entries(wanted).some(([key, value]) => JSON.stringify(owned[key]) !== JSON.stringify(value));
   if (owned) Object.assign(owned, wanted);

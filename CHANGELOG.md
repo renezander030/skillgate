@@ -18,7 +18,8 @@
   records are ignored. Receipts cannot overwrite gate inputs, and runs that
   change their snapshot cannot produce a passing receipt.
 - Pre-commit hooks run on deletion-only commits. Reinstallation upgrades the
-  existing Skillgate hook, preserves other hooks, and `doctor` flags old wiring.
+  existing Skillgate hook, preserves command flags, hook stages and other hooks,
+  and `doctor` flags old wiring.
 - Installed Claude Stop hooks use stdout JSON decisions, including a blocking
   fallback if the gate cannot launch. Missing-file diagnostics remain blocking.
 - Hook installation is serialized per project, and complete configuration files

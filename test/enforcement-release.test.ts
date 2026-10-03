@@ -120,7 +120,7 @@ test("completed Unix shells cannot leave background descendants writing after a 
 
 test("pre-commit installation upgrades deletion-only coverage and preserves unrelated hooks", t => {
   const dir = project(t, { ".skillgate.json": JSON.stringify({ gates: [{ id: "docs", type: "file-exists", file: "README.md" }] }),
-    ".pre-commit-config.yaml": "repos:\n  - repo: local\n    hooks:\n      - id: other\n        entry: echo other\n      - id: skillgate\n        entry: npx @reneza/skillgate@0.9.0 check\n        custom: preserved\n" });
+    ".pre-commit-config.yaml": "repos:\n  - repo: local\n    hooks:\n      - id: other\n        entry: echo other\n      - id: skillgate\n        name: pinned project policy\n        entry: npx '@reneza/skillgate@0.9.0' check --pin --base main\n        stages: [pre-push]\n        custom: preserved\n" });
   assert.equal(doctor(dir, ["pre-commit"]).at(-1)?.ok, false);
   assert.equal(installIntegration("pre-commit", dir).changed, true);
   const data: any = parseYaml(fs.readFileSync(path.join(dir, ".pre-commit-config.yaml"), "utf8"));
@@ -130,6 +130,9 @@ test("pre-commit installation upgrades deletion-only coverage and preserves unre
   assert.equal(hooks[1].always_run, true);
   assert.equal(hooks[1].pass_filenames, false);
   assert.equal(hooks[1].custom, "preserved");
+  assert.equal(hooks[1].name, "pinned project policy");
+  assert.match(hooks[1].entry, /npx '@reneza\/skillgate@0\.13\.0' check --pin --base main$/);
+  assert.deepEqual(hooks[1].stages, ["pre-push", "pre-commit"]);
   assert.equal(doctor(dir, ["pre-commit"]).at(-1)?.ok, true);
   assert.equal(installIntegration("pre-commit", dir).changed, false);
 });
