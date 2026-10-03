@@ -20,6 +20,7 @@ README for the research basis (the Compliance Gap).
 | `command.ts` | Structural shell segmentation and finish-line matching across POSIX shells, PowerShell, wrappers, and Windows executable suffixes. |
 | `process.ts` | Supervised command execution with bounded wall time and process-tree cleanup. |
 | `receipt.ts` | Repository snapshot keys, passing-result cache storage, and versioned execution receipts. |
+| `files.ts` | Atomic integration configuration writes and a per-project installation lock. |
 | `integrations.ts` | Idempotent installer and health checks for Claude Code, OpenCode, GitHub Actions, and pre-commit. |
 | `drift.ts` | Instruction-file drift detection (similarity of CLAUDE.md / AGENTS.md / Cursor / Copilot / …). Powers the `instruction-sync` gate and the `drift` / `diff-instructions` commands. Also exports `lineDiff()` and `formatDiff()` for showing line-level changes between instruction files. |
 | `link.ts` | `runSync()` — makes one instruction file canonical and links the rest. Powers `sync`. |

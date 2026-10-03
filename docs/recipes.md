@@ -27,6 +27,7 @@ Block local commits until gates pass.
       entry: npx @reneza/skillgate@latest check
       language: system
       pass_filenames: false
+      always_run: true
 ```
 
 ## CI (GitHub Actions)

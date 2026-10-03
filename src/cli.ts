@@ -4,7 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { findSpecPath, loadSpec, parseSpec, specRoot, DEFAULT_SPEC_PATHS, DEFAULT_PHASE_FILE, type Spec, type PhaseGate } from "./spec.js";
+import { findSpecPath, loadSpec, parseSpec, specRoot, DEFAULT_SPEC_PATHS, DEFAULT_PHASE_FILE, DEFAULT_RUN_TIMEOUT_MS, type Spec, type PhaseGate } from "./spec.js";
 import { runGates, decideCommand, decideTool, currentPhase, evaluatePhase, type GateResult, type RunResult } from "./core.js";
 import { checkDrift, formatDiff, DEFAULT_THRESHOLD, discover, pickCanonical } from "./drift.js";
 import { runSync } from "./link.js";
@@ -12,7 +12,7 @@ import { runScaffold, listTemplates } from "./scaffold.js";
 import { doctor, installIntegration, INTEGRATION_TARGETS, type IntegrationTarget } from "./integrations.js";
 import { analyzeCommand } from "./command.js";
 import { reviewSnapshot } from "./review.js";
-import { readCachedResult, snapshotKey, writeCachedResult, writeReceipt } from "./receipt.js";
+import { cacheDisabledReason, receiptPathIsInput, readCachedResult, snapshotKey, writeCachedResult, writeReceipt } from "./receipt.js";
 import { resolveBaseRef, mergeBase, readFileAtRef, repoRelativePath, repoRoot, isClean } from "./git.js";
 import {
   createPrivatePassProof,
@@ -117,12 +117,12 @@ Flags:
   --command "<cmd>"        gate: the command to judge (else read from stdin);
                            check: evaluate gates as required for this command (when.command)
   --format <fmt>           check: github (workflow annotations on failures);
-                           gate: text, json, cursor, or gemini hook protocol
+                           gate: text, json, cursor, gemini, or claude-stop hook protocol
   --event stop             gate: judge the agent's Stop event instead of a command
   --tool <name>            gate: judge an agent tool call (gatedTools) instead of a command
   --gate <id>              phase: which phase gate, when the spec has more than one
   --stop                   install claude-code: also register the Stop hook
-  --timeout <ms>           check: cap the complete gate run (overrides spec timeout)
+  --timeout <ms>           check/gate: cap the complete gate run (overrides spec timeout)
   --cache                  check: reuse a passing result only for the exact repo snapshot
   --receipt <file>         check: write a machine-readable execution receipt
   --allow-on-error         gate: allow instead of fail-closed if evaluation errors
@@ -253,20 +253,23 @@ interface Resolved {
 function resolveSpecAndBase(specPathHint: string | null): Resolved {
   const workspace = specPathHint ? specRoot(specPathHint) : (repoRoot(cwd) ?? cwd);
   const rawBase = resolveBaseRef(workspace, baseArg);
+  if (!rawBase && (baseArg?.trim() || process.env.SKILLGATE_BASE?.trim())) {
+    throw new Error("requested base ref cannot be resolved — refusing to use a different baseline");
+  }
   const gateBase = rawBase ? mergeBase(workspace, rawBase) : undefined;
 
   if (!pin) {
-    if (!specPathHint) die(2, "no spec found — run `skillgate init` or pass a path");
+    if (!specPathHint) throw new Error("no spec found — run `skillgate init` or pass a path");
     return { spec: loadSpec(specPathHint), workspace, gateBase };
   }
 
   if (!rawBase) {
-    die(2, "--pin: cannot resolve a base ref (set SKILLGATE_BASE or pass --base <ref>) — refusing to run unpinned (fail-closed)");
+    throw new Error("--pin: cannot resolve a base ref (set SKILLGATE_BASE or pass --base <ref>) — refusing to run unpinned (fail-closed)");
   }
   const root = repoRoot(workspace);
-  if (!root) die(2, "--pin: not a git repository (fail-closed)");
+  if (!root) throw new Error("--pin: not a git repository (fail-closed)");
   const pinnedRel = specPathHint ? repoRelativePath(workspace, specPathHint) : null;
-  if (specPathHint && !pinnedRel) die(2, "--pin: spec is outside the active Git worktree (fail-closed)");
+  if (specPathHint && !pinnedRel) throw new Error("--pin: spec is outside the active Git worktree (fail-closed)");
   const rels = pinnedRel ? [pinnedRel] : DEFAULT_SPEC_PATHS;
   for (const rel of rels) {
     const raw = readFileAtRef(workspace, gateBase!, rel);
@@ -275,7 +278,7 @@ function resolveSpecAndBase(specPathHint: string | null): Resolved {
       return { spec: parseSpec(raw, label, rel.endsWith(".json")), workspace, gateBase, pinnedTo: gateBase };
     }
   }
-  return die(2, `--pin: no committed spec at ${gateBase!.slice(0, 12)} (looked for ${rels.join(", ")}) — commit your .skillgate/done.yaml to the base branch first (fail-closed)`);
+  throw new Error(`--pin: no committed spec at ${gateBase!.slice(0, 12)} (looked for ${rels.join(", ")}) — commit your .skillgate/done.yaml to the base branch first (fail-closed)`);
 }
 
 /** Shell tool names across agents; their calls are judged as commands by `finishLine`. */
@@ -597,6 +600,7 @@ if (cmd === "check") {
   let result;
   let pinnedTo: string | undefined;
   let cacheHit = false;
+  let cacheReason: string | undefined;
   let snapshot: string | undefined;
   let workspace = cwd;
   try {
@@ -606,20 +610,26 @@ if (cmd === "check") {
     const timeoutArg = option("--timeout");
     const timeoutMs = timeoutArg == null ? undefined : Number(timeoutArg);
     if (timeoutArg != null && (!Number.isInteger(timeoutMs) || timeoutMs! < 1)) die(2, "--timeout must be a positive integer in milliseconds");
-    // External state and private denylist files are not covered by the snapshot cache.
-    const cache = args.includes("--cache") && !r.spec.gates.some(gate => ["trufflehog", "review"].includes(gate.type));
+    cacheReason = args.includes("--cache") ? cacheDisabledReason(r.spec) : undefined;
+    const cache = args.includes("--cache") && !cacheReason;
     const receipt = option("--receipt");
     const receiptFile = receipt ? path.resolve(cwd, receipt) : undefined;
+    if (receiptFile && receiptPathIsInput(r.spec, r.workspace, receiptFile)) throw new Error("--receipt must not overwrite or exclude a gate input; choose an output outside the gates' paths/globs");
     const receiptRel = receiptFile ? path.relative(r.workspace, receiptFile).split(path.sep).join("/") : "";
     const snapshotIgnore = receiptRel && !receiptRel.startsWith("../") ? [receiptRel] : [];
     // The judged command changes which gates apply, so it is part of the snapshot.
-    if (cache || receipt) snapshot = snapshotKey({ ...r.spec, timeout: timeoutMs ?? r.spec.timeout, ...(forCommand != null ? { forCommand } : {}) } as Spec, r.workspace, r.gateBase, snapshotIgnore);
-    const cached = cache && snapshot ? readCachedResult(r.workspace, snapshot) : null;
+    const snapshotSpec = { ...r.spec, timeout: timeoutMs ?? r.spec.timeout, ...(forCommand != null ? { forCommand } : {}) } as Spec;
+    if (cache || receipt) snapshot = snapshotKey(snapshotSpec, r.workspace, r.gateBase, snapshotIgnore);
+    const cached = cache && snapshot ? readCachedResult(r.workspace, snapshot, r.spec) : null;
     if (cached) {
       result = cached;
       cacheHit = true;
     } else {
       result = runGates(r.spec, r.workspace, { baseRef: r.gateBase, timeoutMs, command: forCommand });
+      if (snapshot && snapshotKey(snapshotSpec, r.workspace, r.gateBase, snapshotIgnore) !== snapshot) {
+        const changed: GateResult = { id: "skillgate:snapshot", type: "snapshot", ok: false, status: "fail", reason: "workspace changed during evaluation; rerun checks against the final files" };
+        result = { ...result, passed: false, results: [...result.results, changed], failed: [...result.failed, changed] };
+      }
       if (cache && snapshot) writeCachedResult(r.workspace, snapshot, result);
     }
     if (receiptFile && snapshot) writeReceipt(receiptFile, snapshot, result, cacheHit ? "cache" : "executed");
@@ -629,7 +639,7 @@ if (cmd === "check") {
   }
 
   if (json) {
-    console.log(JSON.stringify({ ...result, pinnedTo, cacheHit, snapshot }, null, 2));
+    console.log(JSON.stringify({ ...result, pinnedTo, cacheHit, cacheDisabledReason: cacheReason, snapshot }, null, 2));
     process.exit(result.passed ? 0 : 1);
   }
 
@@ -637,6 +647,7 @@ if (cmd === "check") {
     console.log(c(C.dim, `  policy pinned to ${pinnedTo.slice(0, 12)} (base ref) — this change cannot loosen it`));
   }
   if (cacheHit) console.log(c(C.dim, "  exact snapshot cache hit — reused prior passing receipt"));
+  if (cacheReason) console.log(c(C.dim, `  ${cacheReason}`));
   printResults(result.results);
   console.log("");
   if (format === "github") for (const line of githubAnnotations(result, workspace)) console.log(line);
@@ -785,7 +796,7 @@ if (cmd === "phase") {
       ? `no phase gate with id ${wanted}`
       : phaseGates.length ? `spec has ${phaseGates.length} phase gates — pass --gate <id>` : "spec has no phase gate");
   }
-  const opts = { baseRef: r.gateBase, spec: r.spec, gates: new Map(r.spec.gates.map((g) => [g.id, g])), memo: new Map<string, GateResult>() };
+  const opts = { baseRef: r.gateBase, spec: r.spec, deadline: Date.now() + (r.spec.timeout ?? DEFAULT_RUN_TIMEOUT_MS), gates: new Map(r.spec.gates.map((g) => [g.id, g])), memo: new Map<string, GateResult>() };
   const marker = path.resolve(r.workspace, gate.current ?? DEFAULT_PHASE_FILE);
   const current = currentPhase(gate, r.workspace);
 
@@ -828,9 +839,10 @@ if (cmd === "gate") {
   // gemini formats answer in JSON on stdout instead). Fails closed on error unless
   // --allow-on-error. `--event stop` judges the agent ending its turn instead.
   const format = json ? "json" : (option("--format") ?? "text");
-  if (!["text", "json", "cursor", "gemini"].includes(format)) die(2, `gate --format must be text, json, cursor, or gemini`);
+  if (!["text", "json", "cursor", "gemini", "claude-stop"].includes(format)) die(2, `gate --format must be text, json, cursor, gemini, or claude-stop`);
   const event = option("--event") ?? "command";
   if (!["command", "stop"].includes(event)) die(2, `gate --event must be command or stop`);
+  if (format === "claude-stop" && event !== "stop") die(2, "--format claude-stop requires --event stop");
   const allowOnError = args.includes("--allow-on-error");
   const payload = readStdinPayload();
   // A non-shell tool call (an MCP tool, say) is judged by `gatedTools`, not `finishLine`.
@@ -847,7 +859,10 @@ if (cmd === "gate") {
     const guidance = event === "stop"
       ? `skillgate: the work is not done — ${reason}.\n${details}\nFix these before you finish. Do not weaken or bypass the gates.`
       : `skillgate blocked ${tool ? `tool ${tool}` : `"${command}"`}: ${reason}.\n${details}\nComplete the unmet gates, then retry.`;
-    if (format === "json") {
+    if (format === "claude-stop") {
+      console.log(JSON.stringify(decision === "allow" ? {} : { decision: "block", reason: guidance }));
+      process.exit(0);
+    } else if (format === "json") {
       console.log(JSON.stringify({ decision, reason, command, event, ...extra }, null, 2));
     } else if (format === "cursor") {
       console.log(JSON.stringify(decision === "allow"
@@ -870,15 +885,18 @@ if (cmd === "gate") {
 
   try {
     const r = resolveSpecAndBase(specPath && fs.existsSync(specPath) ? specPath : null);
+    const timeoutArg = option("--timeout");
+    const timeoutMs = timeoutArg == null ? undefined : Number(timeoutArg);
+    if (timeoutMs != null && (!Number.isInteger(timeoutMs) || timeoutMs < 1)) throw new Error("--timeout must be a positive integer in milliseconds");
     if (event === "stop") {
       if (isClean(r.workspace) === true) answer("allow", "no changes in the worktree — nothing to verify", [], { pinnedTo: r.pinnedTo });
-      const result = runGates(r.spec, r.workspace, { baseRef: r.gateBase });
+      const result = runGates(r.spec, r.workspace, { baseRef: r.gateBase, timeoutMs });
       if (result.passed) answer("allow", `all ${applied(result)} applicable gates passed`, [], { pinnedTo: r.pinnedTo, result });
       answer("block", `${result.failed.length} of ${applied(result)} gates unmet: ${result.failed.map((f) => f.id).join(", ")}`, result.failed, { pinnedTo: r.pinnedTo, result });
     }
     const decision = tool
-      ? decideTool(r.spec, r.workspace, tool, { baseRef: r.gateBase })
-      : decideCommand(r.spec, r.workspace, command, { baseRef: r.gateBase });
+      ? decideTool(r.spec, r.workspace, tool, { baseRef: r.gateBase, timeoutMs })
+      : decideCommand(r.spec, r.workspace, command, { baseRef: r.gateBase, timeoutMs });
     answer(decision.decision, decision.reason, decision.result?.failed ?? [], { pinnedTo: r.pinnedTo, ...(decision.result ? { result: decision.result } : {}) });
   } catch (e: any) {
     answer(allowOnError ? "allow" : "block", `error: ${e.message}`);

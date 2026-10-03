@@ -6,6 +6,7 @@ export interface CommandExecution {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  outputLimited: boolean;
   error?: Error;
 }
 
@@ -18,23 +19,38 @@ const command = process.argv[1];
 const cwd = process.argv[2];
 const timeout = Number(process.argv[3]);
 const windows = process.platform === "win32";
-const child = spawn(command, { cwd, shell: true, detached: !windows, stdio: "inherit" });
+const child = spawn(command, { cwd, shell: true, detached: !windows, stdio: ["ignore", "pipe", "pipe"] });
 let expired = false;
-const timer = setTimeout(() => {
-  expired = true;
+let limited = false;
+let bytes = 0;
+function terminate() {
   if (windows && child.pid) {
     const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
     killer.once("error", () => { try { child.kill("SIGKILL"); } catch {} });
   } else if (child.pid) {
     try { process.kill(-child.pid, "SIGKILL"); } catch { try { child.kill("SIGKILL"); } catch {} }
   }
-}, timeout);
+}
+function forward(stream, data) {
+  bytes += data.length;
+  if (bytes > 8 * 1024 * 1024) { limited = true; terminate(); return; }
+  stream.write(data);
+}
+child.stdout.on("data", data => forward(process.stdout, data));
+child.stderr.on("data", data => forward(process.stderr, data));
+const timer = setTimeout(() => { expired = true; terminate(); }, timeout);
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, () => { terminate(); process.exit(128); });
+}
 child.once("error", error => { clearTimeout(timer); console.error(error.message); process.exit(126); });
 child.once("exit", (code, signal) => {
+  // A completed shell must not leave background jobs holding its output pipes.
+  if (!windows) terminate();
+});
+child.once("close", (code, signal) => {
   clearTimeout(timer);
-  if (expired) process.exit(124);
-  if (signal) process.exit(128);
-  process.exit(code == null ? 1 : code);
+  const status = limited ? 125 : expired ? 124 : signal ? 128 : code == null ? 1 : code;
+  process.exitCode = status;
 });
 `;
 
@@ -53,6 +69,7 @@ export function runShellCommand(command: string, cwd: string, timeout: number): 
     stdout: String(result.stdout || ""),
     stderr: String(result.stderr || ""),
     timedOut: result.status === 124 || result.signal === "SIGKILL" || error?.code === "ETIMEDOUT",
+    outputLimited: result.status === 125 || error?.code === "ENOBUFS",
     error,
   };
 }

@@ -137,7 +137,7 @@ test("agent hooks are installed fail-closed with a timeout, for every agent", (t
   }
   const claude = JSON.parse(fs.readFileSync(path.join(dir, ".claude", "settings.json"), "utf8"));
   assert.equal(claude.hooks.PreToolUse[0].hooks[0].command, gateCommand());
-  assert.match(gateCommand(), /gate \|\| exit 2$/);
+  assert.match(gateCommand(), /gate --timeout 540000 \|\| exit 2$/);
   assert.equal(claude.hooks.PreToolUse[0].hooks[0].timeout, 600);
   assert.equal(claude.hooks.Stop, undefined);
 
@@ -177,7 +177,8 @@ test("install claude-code --stop adds the Stop hook; an old fail-open hook is up
   assert.equal(data.hooks.PreToolUse.length, 2);
   assert.equal(data.hooks.PreToolUse[0].hooks[0].command, "other-tool");
   assert.equal(data.hooks.PreToolUse[1].hooks[0].command, gateCommand());
-  assert.match(data.hooks.Stop[0].hooks[0].command, /gate --event stop \|\| exit 2$/);
+  assert.match(data.hooks.Stop[0].hooks[0].command, /gate --timeout 540000 --event stop --format claude-stop/);
+  assert.match(data.hooks.Stop[0].hooks[0].command, /decision:'block'/);
   assert.ok(doctor(dir, ["claude-code"]).every((c) => c.ok));
 
   assert.equal(sg(["install", "cursor", "--stop"], dir).status, 2);

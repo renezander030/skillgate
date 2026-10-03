@@ -3,6 +3,7 @@ import path from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { findSpecPath, loadSpec, specRoot } from "./spec.js";
 import { repoRoot } from "./git.js";
+import { writeTextAtomic, withInstallLock } from "./files.js";
 
 export const INTEGRATION_TARGETS = ["claude-code", "codex", "gemini-cli", "cursor", "opencode", "github-actions", "pre-commit"] as const;
 export type IntegrationTarget = (typeof INTEGRATION_TARGETS)[number];
@@ -14,9 +15,11 @@ export interface InstallOptions {
 
 /** Hook budget in seconds. Long enough for a test suite; a hook that times out fails open in most agents. */
 export const HOOK_TIMEOUT_SECONDS = 600;
+export const GATE_TIMEOUT_MS = 540_000;
 const MARKER = "@reneza/skillgate@";
-/** Appended to every agent hook: any failure to run the gate (npx, network) becomes a block. */
+/** Command hooks block when the gate cannot run; Stop hooks use a JSON fallback. */
 const FAIL_CLOSED = " || exit 2";
+const STOP_FAIL_CLOSED = ` || node -e "console.log(JSON.stringify({decision:'block',reason:'Skillgate could not run; restore the gate before finishing.'}))"`;
 
 export interface InstallResult {
   target: IntegrationTarget;
@@ -32,8 +35,7 @@ export interface DoctorCheck {
 }
 
 function writeJson(file: string, value: unknown): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(value, null, 2) + "\n");
+  writeTextAtomic(file, JSON.stringify(value, null, 2) + "\n");
 }
 
 function packageRef(): string {
@@ -55,9 +57,9 @@ function readJson(file: string): any {
   }
 }
 
-/** The shell command an agent hook runs. Exit 2 blocks in every supported agent. */
+/** The shell command an agent hook runs, with the protocol's blocking fallback. */
 export function gateCommand(extra = ""): string {
-  return `npx --yes ${packageRef()} gate${extra}${FAIL_CLOSED}`;
+  return `npx --yes ${packageRef()} gate --timeout ${GATE_TIMEOUT_MS}${extra}${extra.includes("--format claude-stop") ? STOP_FAIL_CLOSED : FAIL_CLOSED}`;
 }
 
 /** Regex source for a tool-name glob (`*` any run, `?` one character). */
@@ -116,7 +118,7 @@ function installClaude(cwd: string, opts: InstallOptions): InstallResult {
   }, file)];
   if (opts.stop) {
     outcomes.push(upsertHook(data.hooks, "Stop", {
-      hooks: [{ type: "command", command: gateCommand(" --event stop"), timeout: HOOK_TIMEOUT_SECONDS }],
+      hooks: [{ type: "command", command: gateCommand(" --event stop --format claude-stop"), timeout: HOOK_TIMEOUT_SECONDS }],
     }, file));
   }
   return hookResult("claude-code", file, outcomes, opts.stop ? "PreToolUse and Stop hooks" : "PreToolUse hook", data);
@@ -201,8 +203,7 @@ function installGitHubActions(cwd: string): InstallResult {
     if (!old.includes("@reneza/skillgate")) throw new Error(`${file} already exists and is not a Skillgate workflow`);
     return { target: "github-actions", changed: false, file, detail: "workflow already installed" };
   }
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, actionWorkflow());
+  writeTextAtomic(file, actionWorkflow());
   return { target: "github-actions", changed: true, file, detail: "installed pull-request workflow" };
 }
 
@@ -212,27 +213,30 @@ function installPreCommit(cwd: string): InstallResult {
   if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error(`${file}: expected a YAML object`);
   data.repos ??= [];
   if (!Array.isArray(data.repos)) throw new Error(`${file}: repos must be an array`);
-  const exists = JSON.stringify(data.repos).includes("@reneza/skillgate");
-  if (!exists) {
+  const owned = data.repos.flatMap((repo: any) => repo?.repo === "local" && Array.isArray(repo.hooks) ? repo.hooks : [])
+    .find((hook: any) => hook?.id === "skillgate" && typeof hook.entry === "string" && hook.entry.includes("@reneza/skillgate"));
+  const wanted = {
+    id: "skillgate", name: "skillgate definition-of-done", entry: `npx --yes ${packageRef()} check`,
+    language: "system", pass_filenames: false, always_run: true, stages: ["pre-commit"],
+  };
+  const changed = !owned || Object.entries(wanted).some(([key, value]) => JSON.stringify(owned[key]) !== JSON.stringify(value));
+  if (owned) Object.assign(owned, wanted);
+  else {
     data.repos.push({
       repo: "local",
-      hooks: [{
-        id: "skillgate",
-        name: "skillgate definition-of-done",
-        entry: `npx --yes ${packageRef()} check`,
-        language: "system",
-        pass_filenames: false,
-        stages: ["pre-commit"],
-      }],
+      hooks: [wanted],
     });
-    fs.writeFileSync(file, stringifyYaml(data));
   }
-  return { target: "pre-commit", changed: !exists, file, detail: exists ? "hook already installed" : "installed pre-commit hook" };
+  if (changed) {
+    writeTextAtomic(file, stringifyYaml(data));
+  }
+  return { target: "pre-commit", changed, file, detail: changed ? "installed or upgraded always-run pre-commit hook" : "hook already installed" };
 }
 
 export function installIntegration(target: IntegrationTarget, cwd: string, opts: InstallOptions = {}): InstallResult {
   const root = projectRoot(cwd);
-  switch (target) {
+  return withInstallLock(root, () => {
+    switch (target) {
     case "claude-code": return installClaude(root, opts);
     case "codex": return installCodex(root);
     case "gemini-cli": return installGemini(root);
@@ -240,7 +244,8 @@ export function installIntegration(target: IntegrationTarget, cwd: string, opts:
     case "opencode": return installOpenCode(root);
     case "github-actions": return installGitHubActions(root);
     case "pre-commit": return installPreCommit(root);
-  }
+    }
+  });
 }
 
 function fileContains(file: string, marker: string): boolean {
@@ -287,9 +292,31 @@ export function doctor(cwd: string, targets: readonly IntegrationTarget[] = INTE
       checks.push({ id: target, ok: false, detail: `configured in ${rel} but fails open when the gate cannot run — re-run \`skillgate install ${target}\`` });
     } else if (uncovered(target, file, root).length) {
       checks.push({ id: target, ok: false, detail: `hook in ${rel} does not cover gatedTools ${uncovered(target, file, root).join(", ")} — re-run \`skillgate install ${target}\`` });
+    } else if (target === "pre-commit" && !preCommitHealthy(file)) {
+      checks.push({ id: target, ok: false, detail: `hook in ${rel} can skip commits — re-run \`skillgate install pre-commit\`` });
+    } else if (target === "claude-code" && !stopHookHealthy(file)) {
+      checks.push({ id: target, ok: false, detail: `Stop hook in ${rel} needs Claude JSON output — re-run \`skillgate install claude-code --stop\`` });
+    } else if (failClosed && !fileContains(file, `--timeout ${GATE_TIMEOUT_MS}`)) {
+      checks.push({ id: target, ok: false, detail: `hook in ${rel} lacks an internal timeout — re-run \`skillgate install ${target}\`` });
     } else {
       checks.push({ id: target, ok: true, detail: `configured in ${rel}` });
     }
   }
   return checks;
+}
+
+function preCommitHealthy(file: string): boolean {
+  try {
+    const data: any = parseYaml(fs.readFileSync(file, "utf8"));
+    return data.repos?.some((repo: any) => repo.repo === "local" && repo.hooks?.some((hook: any) =>
+      hook.id === "skillgate" && hook.entry?.includes("@reneza/skillgate") && hook.always_run === true && hook.pass_filenames === false));
+  } catch { return false; }
+}
+
+function stopHookHealthy(file: string): boolean {
+  try {
+    const hooks = readJson(file).hooks?.Stop ?? [];
+    return !hooks.some((entry: any) => entry.hooks?.some((hook: any) =>
+      hook.command?.includes(MARKER) && (!hook.command.includes("--format claude-stop") || !hook.command.includes(`--timeout ${GATE_TIMEOUT_MS}`) || !hook.command.includes(STOP_FAIL_CLOSED))));
+  } catch { return false; }
 }

@@ -15,7 +15,7 @@ import {
   DEFAULT_RUN_TIMEOUT_MS,
 } from "./spec.js";
 import { checkDrift, DEFAULT_THRESHOLD } from "./drift.js";
-import { readFileAtRef, listFilesAtRef, matchesGlob, changedFiles, currentBranch, baseLabel } from "./git.js";
+import { readFileAtRef, listFilesAtRef, matchesGlob, changedFiles, currentBranch, baseLabel, repoRelativePath } from "./git.js";
 import { checkManifest, SUPPORTED_MANIFESTS } from "./deps.js";
 import { isStructuredCommandMatch } from "./command.js";
 import { runShellCommand } from "./process.js";
@@ -49,6 +49,8 @@ export interface RunOptions {
   timeoutMs?: number;
   /** Internal per-gate cap derived from the remaining total budget. */
   remainingMs?: number;
+  /** Absolute run deadline, shared with phase dependencies. */
+  deadline?: number;
   /** The finish-line command being judged, for `when.command`. Unset = every gate applies. */
   command?: string;
   /** The agent tool call being judged (see `gatedTools`), for `when.tool`. */
@@ -85,6 +87,7 @@ export function currentPhase(gate: PhaseGate, cwd: string): string {
  * the workspace, so an agent cannot mark a phase done without doing it.
  */
 export function evaluatePhase(gate: PhaseGate, target: string, cwd: string, opts: RunOptions): PhaseStatus {
+  const phaseOpts = { ...opts, deadline: opts.deadline ?? Date.now() + (opts.remainingMs ?? opts.timeoutMs ?? opts.spec?.timeout ?? DEFAULT_RUN_TIMEOUT_MS) };
   const index = gate.phases.findIndex((phase) => phase.id === target);
   if (index < 0) {
     return { phase: target, failed: [], required: [], error: `unknown phase ${target} (phases: ${gate.phases.map((p) => p.id).join(", ")})` };
@@ -97,7 +100,7 @@ export function evaluatePhase(gate: PhaseGate, target: string, cwd: string, opts
       failed.push({ id, type: "missing", ok: false, reason: `no gate with id ${id}` });
       continue;
     }
-    const result = runOne(dep, cwd, opts);
+    const result = runOne(dep, cwd, phaseOpts);
     if (!result.ok) failed.push(result);
   }
   return { phase: target, failed, required };
@@ -107,7 +110,13 @@ export function evaluatePhase(gate: PhaseGate, target: string, cwd: string, opts
 function runOne(gate: Gate, cwd: string, opts: RunOptions): GateResult {
   const cached = opts.memo?.get(gate.id);
   if (cached) return cached;
-  const result = checkGate(gate, cwd, opts);
+  const remainingMs = opts.deadline == null ? opts.remainingMs : opts.deadline - Date.now();
+  const started = Date.now();
+  const result: GateResult = remainingMs != null && remainingMs <= 0
+    ? { id: gate.id, type: gate.type, ok: false, status: "not-run", reason: "not run: overall timeout exhausted", durationMs: 0 }
+    : checkGate(gate, cwd, { ...opts, remainingMs });
+  result.status ??= result.ok ? "pass" : "fail";
+  result.durationMs ??= Date.now() - started;
   opts.memo?.set(gate.id, result);
   return result;
 }
@@ -160,10 +169,11 @@ class Scanner {
     let size: number;
     try {
       const stat = fs.statSync(full);
-      if (!stat.isFile()) return null;
+      if (!stat.isFile()) throw new ScanLimit(`${rel} is not a regular file`);
       size = stat.size;
-    } catch {
-      return null;
+    } catch (error: any) {
+      if (error?.code === "ENOENT") return null;
+      throw error;
     }
     this.cap(rel, size);
     this.scanned++;
@@ -173,7 +183,9 @@ class Scanner {
   /** Text as of a git ref, or null when the file did not exist there. */
   atRef(cwd: string, ref: string, rel: string, total: number): string | null {
     this.tick(total);
-    const text = readFileAtRef(cwd, ref, rel);
+    const historical = repoRelativePath(cwd, path.resolve(cwd, rel));
+    if (!historical) throw new Error(`cannot resolve baseline path: ${rel}`);
+    const text = readFileAtRef(cwd, ref, historical, true);
     if (text != null) this.cap(`${rel} at ${ref.slice(0, 12)}`, Buffer.byteLength(text));
     return text;
   }
@@ -266,7 +278,8 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
         const full = path.resolve(cwd, gate.file);
         if (!fs.existsSync(full)) return { ...base, ok: false, reason: `file not found: ${gate.file}`, location: { file: gate.file } };
         const re = new RegExp(gate.pattern, gate.flags ?? "");
-        const text = new Scanner(gate.maxBytes, opts.remainingMs).file(cwd, gate.file, 1) ?? "";
+        const text = new Scanner(gate.maxBytes, opts.remainingMs).file(cwd, gate.file, 1);
+        if (text == null) return { ...base, ok: false, reason: `file could not be read: ${gate.file}`, location: { file: gate.file } };
         return re.test(text)
           ? { ...base, ok: true, reason: `${gate.file} matches /${gate.pattern}/` }
           : { ...base, ok: false, reason: `${gate.file} missing /${gate.pattern}/`, location: { file: gate.file } };
@@ -278,7 +291,7 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
         const scan = new Scanner(gate.maxBytes, opts.remainingMs);
         for (const f of files) {
           const text = scan.file(cwd, f, files.length);
-          if (text == null) continue;
+          if (text == null) return { ...base, ok: false, reason: `matched file disappeared: ${f}`, location: { file: f } };
           const lines = text.split("\n");
           for (let i = 0; i < lines.length; i++) {
             if (re.test(lines[i])) {
@@ -292,6 +305,7 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
         const timeout = Math.max(1, Math.min(gate.timeout ?? DEFAULT_COMMAND_TIMEOUT_MS, opts.remainingMs ?? Number.POSITIVE_INFINITY));
         const result = runShellCommand(gate.run, cwd, timeout);
         if (result.timedOut) return { ...base, ok: false, reason: `command timed out after ${timeout}ms` };
+        if (result.outputLimited) return { ...base, ok: false, reason: "command exceeded output limit" };
         if (result.error) return { ...base, ok: false, reason: `\`${gate.run}\` failed: ${result.error.message}` };
         if (result.status === 0) return { ...base, ok: true, reason: `\`${gate.run}\` exited 0` };
         const tail = String(result.stderr || result.stdout || "")
@@ -310,7 +324,10 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
       case "evidence": {
         const full = path.resolve(cwd, gate.file);
         if (!fs.existsSync(full)) return { ...base, ok: false, reason: `evidence missing: ${gate.file}`, location: { file: gate.file } };
-        if (fs.statSync(full).size === 0) return { ...base, ok: false, reason: `evidence empty: ${gate.file}`, location: { file: gate.file } };
+        const stat = fs.statSync(full);
+        if (!stat.isFile()) return { ...base, ok: false, reason: `evidence is not a regular file: ${gate.file}`, location: { file: gate.file } };
+        if (stat.size === 0) return { ...base, ok: false, reason: `evidence empty: ${gate.file}`, location: { file: gate.file } };
+        fs.accessSync(full, fs.constants.R_OK);
         return { ...base, ok: true, reason: `evidence present: ${gate.file}` };
       }
       case "instruction-sync": {
@@ -347,7 +364,7 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
         const re = () => new RegExp(gate.pattern, flags);
         const ignore = gate.ignore ?? [];
         const workFiles = globSync(gate.glob, { cwd, dot: true, ignore: [...IGNORE, ...ignore] });
-        const baseFiles = listFilesAtRef(cwd, opts.baseRef).filter(
+        const baseFiles = listFilesAtRef(cwd, opts.baseRef, true).filter(
           (p) => matchesGlob(p, gate.glob, ignore) && !IGNORE.some((ig) => matchesGlob(p, ig)),
         );
         const union = [...new Set<string>([...workFiles, ...baseFiles])];
@@ -394,7 +411,7 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
           return { ...base, ok: false, reason: `no git base ref to diff against — pass --base <ref> or run in a repo with an upstream (fail-closed)` };
         }
         const ignore = gate.ignore ?? [];
-        const baseFiles = listFilesAtRef(cwd, opts.baseRef).filter((p) => matchesGlob(p, gate.glob, ignore));
+        const baseFiles = listFilesAtRef(cwd, opts.baseRef, true).filter((p) => matchesGlob(p, gate.glob, ignore));
         if (baseFiles.length === 0 && !gate.allowEmpty && !opts.allowEmptyGlobs) {
           const workFiles = globSync(gate.glob, { cwd, dot: true, ignore: [...IGNORE, ...ignore] });
           if (workFiles.length === 0) return { ...base, ok: false, reason: noOpReason(gate.glob) };
@@ -497,32 +514,14 @@ export function runGates(spec: Spec, cwd: string, opts: RunOptions = {}): RunRes
   const ctx: { changed?: string[] | null; branch?: string | null } = {};
   const gates = new Map((spec.gates ?? []).map((gate) => [gate.id, gate]));
   const memo = new Map<string, GateResult>();
+  const deadline = started + timeoutMs;
   for (const gate of spec.gates ?? []) {
     const skipped = skipReason(gate.when, cwd, opts, ctx);
     if (skipped) {
       results.push({ id: gate.id, type: gate.type, ok: true, status: "skipped", durationMs: 0, reason: skipped });
       continue;
     }
-    const elapsed = Date.now() - started;
-    const remainingMs = timeoutMs - elapsed;
-    if (remainingMs <= 0) {
-      results.push({
-        id: gate.id,
-        type: gate.type,
-        ok: false,
-        status: "not-run",
-        durationMs: 0,
-        reason: `not run: overall timeout exhausted after ${timeoutMs}ms`,
-      });
-      continue;
-    }
-    const gateStarted = Date.now();
-    const result = runOne(gate, cwd, { ...opts, remainingMs, gates, memo, spec });
-    results.push({
-      ...result,
-      status: result.ok ? "pass" : "fail",
-      durationMs: Date.now() - gateStarted,
-    });
+    results.push(runOne(gate, cwd, { ...opts, deadline, gates, memo, spec }));
   }
   const failed = results.filter((r) => !r.ok);
   return { passed: failed.length === 0, results, failed, durationMs: Date.now() - started, timeoutMs };

@@ -8,4 +8,5 @@ repos:
         entry: npx @reneza/skillgate check
         language: system
         pass_filenames: false
+        always_run: true
         stages: [pre-commit]
