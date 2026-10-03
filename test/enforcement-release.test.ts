@@ -67,8 +67,9 @@ test("historical glob matching agrees with disk matching for classes, extglobs, 
   assert.equal(result.failed[0].location?.file, "src/a1.ts");
 });
 
-test("nested policies read the same historical files and preserve newline-containing names", t => {
-  const dir = project(t, { "pkg/tests/a.ts": "test('one')\ntest('two')\n", "pkg/tests/space \n name.ts": "test('three')\n", "tests/a.ts": "unrelated\n" }, true);
+test("nested policies scope historical reads and preserve Unix newline-containing names", t => {
+  const unusual = process.platform === "win32" ? "pkg/tests/spaced name.ts" : "pkg/tests/space \n name.ts";
+  const dir = project(t, { "pkg/tests/a.ts": "test('one')\ntest('two')\n", [unusual]: "test('three')\n", "tests/a.ts": "unrelated\n" }, true);
   write(dir, { "pkg/tests/a.ts": "test('one')\n" });
   const spec: Spec = { gates: [{ id: "keep", type: "no-fewer", glob: "tests/**", pattern: "^test" }] };
   const result = runGates(spec, path.join(dir, "pkg"), { baseRef: "main" });
