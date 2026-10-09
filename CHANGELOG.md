@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+## 0.14.0 - 2026-10-09
+
+### Added
+- `unchanged` gate: files matching a glob that existed at the base ref must stay
+  byte-identical. Protects snapshots, golden outputs, applied migrations and CI
+  workflows from being edited to make a check pass. Line-ending normalization does
+  not count as a change. Diff-aware and fails closed without a base.
+- `deps-declared` gate: every package a JavaScript/TypeScript file imports must be
+  declared in the nearest `package.json`. Catches imports that resolve only through
+  hoisting or a global install. Builtins, relative paths, subpath imports and
+  self-references are skipped; `allow` covers path aliases.
+- `instruction-refs` gate: every `@import`, relative Markdown link and
+  directory-qualified code-span path in the agent instruction files must exist.
+  Failures point at the instruction file's line.
+- `instruction-sync` gains `require`: listed tools (`claude-code`, `gemini-cli`, ...)
+  must have their own instruction file in sync with or linked to the canonical one.
+  The reason names a `CLAUDE.local.md` that turns off the AGENTS.md fallback.
+  `skillgate sync --create <tools>` writes the missing `@AGENTS.md` pointers.
+- `signed-commits` gate: every commit between the base ref and HEAD must be signed
+  (`trust: signed`, the default) or carry a good, checkable signature (`trust: verified`).
+- Command gates receive `SKILLGATE_CHANGED_FILES` (a file listing the changed,
+  existing files, filtered by `when.changed`) and `SKILLGATE_CHANGED_COUNT`, so a
+  linter can run on the diff. Both are unset when no base resolves.
+- Decision log: `--log <file>` or `SKILLGATE_LOG` appends every `gate` and `check`
+  verdict as a JSON line; `skillgate log` summarizes blocks per gate and blocked
+  commands. Logs inside the worktree (outside `.git/`) are refused, and logging
+  never changes a verdict.
+- `skillgate explain --commands <file|->` replays a command list or a decision log
+  against the current `finishLine` and names the gates each command would run.
+  `explain --command` also lists those gates.
+
+### Changed
+- A passing `trivy` gate reports the vulnerabilities below the blocking severities
+  (`not blocking: 12 HIGH`). One extra JSON scan runs after a passing vulnerability
+  scan; it is informational and `summary: false` turns it off.
+- `--cache` also reuses passing `unchanged` results.
+
 ## 0.13.1 - 2026-10-03
 
 ### Fixed

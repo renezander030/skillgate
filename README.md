@@ -285,11 +285,15 @@ A `file-contains` gate (e.g. require a touched changelog) and the other types ar
 | `trivy` | Trivy finds no leaked secrets, no blocking CVEs, and can generate a CycloneDX SBOM |
 | `evidence` | a named `file` exists and is non-empty |
 | `not-empty` | a directory at `path` contains at least `min` entries (default 1) |
-| `instruction-sync` | every AI agent instruction file (CLAUDE.md, AGENTS.md, Cursor, Copilot…) still agrees with the canonical one (optional `threshold`, default 0.95) |
+| `instruction-sync` | every AI agent instruction file (CLAUDE.md, AGENTS.md, Cursor, Copilot…) still agrees with the canonical one (optional `threshold`, default 0.95; `require` lists tools that must have their own file) |
+| `instruction-refs` | every path an instruction file points at (`@imports`, relative links, `src/...` code spans) still exists |
 | `no-new` | the count of `pattern` matches in `glob` did not **increase** versus the base ref (skips, `eslint-disable`, TODOs) |
 | `no-fewer` | the count of `pattern` matches in `glob` did not **decrease** versus the base ref (test cases, assertions) |
 | `no-deleted` | every file matching `glob` at the base ref still exists |
+| `unchanged` | every file matching `glob` at the base ref still exists **byte-identical** (snapshots, golden outputs, applied migrations, CI workflows) |
 | `deps-locked` | every dependency declared in `package.json` / `pyproject.toml` is in the lockfile, so a hallucinated package can't slip in |
+| `deps-declared` | every package a JS/TS file in `glob` imports is declared in the nearest `package.json` |
+| `signed-commits` | every commit between the base ref and HEAD is signed (`trust: verified` for a good, checkable signature) |
 | `phase` | the gates required by the active phase and every earlier one pass now (plan → build → review) |
 
 A glob that matches no files fails its gate instead of passing as a silent no-op
@@ -312,6 +316,34 @@ on push or publish, and only when source changed:
 A condition skillgate cannot decide runs the gate. See the
 [spec reference](docs/spec-reference.md#conditional-gates-when).
 
+**Lint only what changed.** Command gates get `SKILLGATE_CHANGED_FILES`, a file
+listing the changed files versus the base (filtered by the gate's `when.changed`),
+so a linter can run on the diff instead of the whole repo:
+
+```yaml
+  - id: lint-changed
+    type: command
+    run: 'if [ -n "$SKILLGATE_CHANGED_FILES" ]; then xargs -r npx eslint < "$SKILLGATE_CHANGED_FILES"; else npx eslint .; fi'
+    when:
+      changed: ["src/**/*.ts"]
+```
+
+**Protect the files that define "correct".** An agent can make a check pass by
+editing the snapshot, the expected output or the CI workflow instead of the code.
+`unchanged` blocks any change to files that existed at the base:
+
+```yaml
+  - id: protected
+    type: unchanged
+    glob: "{**/__snapshots__/**,migrations/**,.github/workflows/**}"
+```
+
+**See what the gate did.** Set `SKILLGATE_LOG=.git/skillgate/decisions.jsonl` (or
+pass `--log`) and every `gate` and `check` verdict is appended as one JSON line.
+`skillgate log` summarizes it: how often each gate blocked and which commands it
+stopped. `skillgate explain --commands <file>` replays a command list, or the log
+itself, against the current `finishLine` before you change it.
+
 **Phases, checked live.** A `phase` gate orders work (plan → build → review) and
 requires each phase's gates, plus every earlier phase's, to pass at the moment
 they are checked. The active phase is a plain marker file, and
@@ -326,7 +358,9 @@ CLI and opencode. `when.tool` scopes a gate to them.
 **Trivy security gate.** Add `type: trivy` when the finish line should stop on
 leaked secrets or critical CVEs. skillgate runs Trivy's secret scan separately
 from the vulnerability scan, so `severity: ["CRITICAL"]` filters CVEs without
-masking secrets. By default it also verifies that Trivy can emit a CycloneDX
+masking secrets. A passing scan reports what it did not block (`not blocking:
+12 HIGH`), so "no critical" never reads as "nothing found"; set `summary: false`
+to skip that count. By default it also verifies that Trivy can emit a CycloneDX
 SBOM; set `sbom: false` if your workflow only needs the blocking scan.
 
 **The `evidence` escape hatch.** Gates only see machine-observable output. For a step like "research the API first," have the agent write `.skillgate/evidence/research.md` as it works and gate on that file. Otherwise the step is invisible and the deviation hides.

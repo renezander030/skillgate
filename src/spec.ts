@@ -118,6 +118,11 @@ export interface TrivyGate extends BaseGate {
   scanners?: ("vuln" | "secret")[];
   /** Vulnerability severities that block. Default ["CRITICAL"]. */
   severity?: ("UNKNOWN" | "LOW" | "MEDIUM" | "HIGH" | "CRITICAL")[];
+  /**
+   * After a passing vulnerability scan, count findings at every severity and report
+   * the ones below the blocking threshold. Informational only. Default true.
+   */
+  summary?: boolean;
   /** Also require Trivy to generate a CycloneDX SBOM. Default true. */
   sbom?: boolean;
   /** Pass --ignore-unfixed to the vulnerability scan. Default false. */
@@ -146,6 +151,23 @@ export interface InstructionSyncGate extends BaseGate {
   type: "instruction-sync";
   /** Similarity ratio required to count as in sync (0..1). Default 0.95. */
   threshold?: number;
+  /**
+   * Tools that must have their own instruction file, in sync or linked to the
+   * canonical one (`claude-code`, `gemini-cli`, `cursor`, ...). A tool that only
+   * finds AGENTS.md through a fallback may not load it at all.
+   */
+  require?: string[];
+}
+
+/**
+ * Every repository path an instruction file points at — `@imports`, relative
+ * Markdown links, and code spans such as `src/cli.ts` — must exist. Stale
+ * references mean agents follow rules about files that are gone.
+ */
+export interface InstructionRefsGate extends BaseGate {
+  type: "instruction-refs";
+  /** Globs of referenced paths to skip (generated output, examples). */
+  ignore?: string[];
 }
 
 /** A directory must contain at least `min` entries. Default 1. */
@@ -200,6 +222,44 @@ export interface NoFewerGate extends BaseGate, ScanOptions, GlobOptions {
 }
 
 /**
+ * Every file matching `glob` that existed at the base ref must still exist with
+ * identical content. Protects the files that define "correct" — snapshots,
+ * golden outputs, applied migrations, CI workflows — from an agent that edits
+ * them to make a check pass. Diff-aware; fails closed without a resolvable base.
+ */
+export interface UnchangedGate extends BaseGate, GlobOptions {
+  type: "unchanged";
+  glob: string;
+  /** Extra globs that may change. */
+  ignore?: string[];
+}
+
+/**
+ * Every package a JavaScript/TypeScript source file imports must be declared in
+ * the nearest package.json. Catches imports that only resolve through hoisting
+ * or a global install, which break for the next user.
+ */
+export interface DepsDeclaredGate extends BaseGate, ScanOptions, GlobOptions {
+  type: "deps-declared";
+  /** Source files to scan, e.g. "src/**\/*.{ts,tsx,js,mjs}". */
+  glob: string;
+  /** Extra globs to exclude. */
+  ignore?: string[];
+  /** Package names (globs) treated as declared: path aliases, virtual modules. */
+  allow?: string[];
+}
+
+/**
+ * Every commit between the base and HEAD must carry a signature. `signed`
+ * (default) accepts any signature git did not reject; `verified` requires a good
+ * signature git can check.
+ */
+export interface SignedCommitsGate extends BaseGate {
+  type: "signed-commits";
+  trust?: "signed" | "verified";
+}
+
+/**
  * Every dependency declared in a manifest must be present in its lockfile. A
  * package an agent invented (or never installed) cannot have resolved into the
  * lockfile, so this catches hallucinated dependencies offline. Supports
@@ -227,10 +287,14 @@ export type Gate =
   | NoDeletedGate
   | NoFewerGate
   | DepsLockedGate
+  | DepsDeclaredGate
+  | InstructionRefsGate
+  | UnchangedGate
+  | SignedCommitsGate
   | PhaseGate;
 
 /** Gate types that compare the working tree to a git base ref. */
-export const DIFF_GATE_TYPES = new Set(["no-new", "no-deleted", "no-fewer"]);
+export const DIFF_GATE_TYPES = new Set(["no-new", "no-deleted", "no-fewer", "unchanged", "signed-commits"]);
 
 export interface Spec {
   /**
@@ -305,6 +369,14 @@ export function findSpecPath(dir: string): string | null {
     if (fs.existsSync(path.join(current, ".git")) || parent === current) return null;
     current = parent;
   }
+}
+
+/** Tool ids accepted by `instruction-sync.require` (see drift.ts TOOL_SPECS). */
+export const INSTRUCTION_TOOL_IDS = ["agents-md", "claude-code", "cursor", "github-copilot", "gemini-cli", "cline", "windsurf", "jetbrains-junie"];
+
+/** Normalize a tool name ("Claude Code", "claude-code", "AGENTS.md") to its id. */
+export function toolId(name: string): string {
+  return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
 type UnknownRecord = Record<string, unknown>;
@@ -407,7 +479,7 @@ function validateGate(value: unknown, index: number): void {
       timeout();
       break;
     case "trivy": {
-      allow("target", "trivy", "scanners", "severity", "sbom", "ignoreUnfixed", "timeout");
+      allow("target", "trivy", "scanners", "severity", "sbom", "summary", "ignoreUnfixed", "timeout");
       optionalNonEmptyString(gate.target, `${where}.target`);
       optionalNonEmptyString(gate.trivy, `${where}.trivy`);
       if (gate.scanners != null) {
@@ -420,7 +492,7 @@ function validateGate(value: unknown, index: number): void {
           throw new Error(`${where}.severity contains an unsupported severity`);
         }
       }
-      for (const field of ["sbom", "ignoreUnfixed"]) {
+      for (const field of ["sbom", "summary", "ignoreUnfixed"]) {
         if (gate[field] != null && typeof gate[field] !== "boolean") throw new Error(`${where}.${field} must be a boolean`);
       }
       timeout();
@@ -442,10 +514,37 @@ function validateGate(value: unknown, index: number): void {
       nonEmptyString(gate.file, `${where}.file`);
       break;
     case "instruction-sync":
-      allow("threshold");
+      allow("threshold", "require");
       if (gate.threshold != null && (typeof gate.threshold !== "number" || !Number.isFinite(gate.threshold) || gate.threshold < 0 || gate.threshold > 1)) {
         throw new Error(`${where}.threshold must be between 0 and 1`);
       }
+      if (gate.require != null) {
+        stringArray(gate.require, `${where}.require`);
+        const unknown = gate.require.filter((name) => !INSTRUCTION_TOOL_IDS.includes(toolId(name)));
+        if (unknown.length) throw new Error(`${where}.require has unknown tool${unknown.length > 1 ? "s" : ""}: ${unknown.join(", ")} (known: ${INSTRUCTION_TOOL_IDS.join(", ")})`);
+      }
+      break;
+    case "instruction-refs":
+      allow("ignore");
+      optionalStringArray(gate.ignore, `${where}.ignore`);
+      break;
+    case "unchanged":
+      allow("glob", "ignore", "allowEmpty");
+      nonEmptyString(gate.glob, `${where}.glob`);
+      optionalStringArray(gate.ignore, `${where}.ignore`);
+      allowEmpty();
+      break;
+    case "deps-declared":
+      allow("glob", "ignore", "allow", "maxBytes", "allowEmpty");
+      nonEmptyString(gate.glob, `${where}.glob`);
+      optionalStringArray(gate.ignore, `${where}.ignore`);
+      optionalStringArray(gate.allow, `${where}.allow`);
+      maxBytes();
+      allowEmpty();
+      break;
+    case "signed-commits":
+      allow("trust");
+      if (gate.trust != null && gate.trust !== "signed" && gate.trust !== "verified") throw new Error(`${where}.trust must be signed or verified`);
       break;
     case "not-empty":
       allow("path", "min");

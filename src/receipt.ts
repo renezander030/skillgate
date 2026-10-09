@@ -10,7 +10,7 @@ import { currentBranch, matchesGlob } from "./git.js";
 import { findDependencyLockfile } from "./deps.js";
 
 const SCAN_IGNORE = ["**/node_modules/**", "**/.git/**", "dist/**"];
-const CACHE_TYPES = new Set(["file-exists", "file-contains", "evidence", "not-empty", "absent", "no-new", "no-fewer", "no-deleted", "phase"]);
+const CACHE_TYPES = new Set(["file-exists", "file-contains", "evidence", "not-empty", "absent", "no-new", "no-fewer", "no-deleted", "unchanged", "phase"]);
 
 /** Reuse only checks whose complete inputs can be observed in the local snapshot. */
 export function cacheDisabledReason(spec: Spec): string | undefined {

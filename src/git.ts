@@ -195,3 +195,79 @@ export function currentBranch(cwd: string): string | undefined {
   }
   return process.env.GITHUB_HEAD_REF?.trim() || process.env.GITHUB_REF_NAME?.trim() || undefined;
 }
+
+export interface BaselineEntry {
+  /** Git file mode: 100644, 100755, or 120000 for a symlink. */
+  mode: string;
+  oid: string;
+}
+
+/**
+ * Every blob (regular file or symlink) at `ref`, keyed by path relative to cwd.
+ * Submodules are left out. Strict: Git errors throw.
+ */
+export function blobsAtRef(cwd: string, ref: string): Map<string, BaselineEntry> {
+  const blobs = new Map<string, BaselineEntry>();
+  if (ref === EMPTY_TREE) return blobs;
+  let out: string;
+  try {
+    out = execFileSync("git", ["ls-tree", "-rz", ref], { cwd, ...GIT_OPTS });
+  } catch {
+    throw new Error(`cannot enumerate baseline tree: ${ref}`);
+  }
+  for (const entry of out.split("\0")) {
+    const tab = entry.indexOf("\t");
+    if (tab < 0) continue;
+    const [mode, type, oid] = entry.slice(0, tab).split(" ");
+    if (type === "blob") blobs.set(entry.slice(tab + 1), { mode, oid });
+  }
+  return blobs;
+}
+
+/** Object id of `content` as a blob in this repository's hash format. Strict. */
+export function hashBlob(cwd: string, content: string): string {
+  try {
+    return execFileSync("git", ["hash-object", "--stdin"], { cwd, ...GIT_OPTS, input: content }).trim();
+  } catch {
+    throw new Error("cannot hash content");
+  }
+}
+
+/**
+ * Object ids the working-tree files would get if committed now (clean filters and
+ * line-ending normalization applied), in input order. Strict: Git errors throw.
+ */
+export function hashWorkingFiles(cwd: string, files: string[]): string[] {
+  if (files.length === 0) return [];
+  try {
+    return execFileSync("git", ["hash-object", "--stdin-paths"], { cwd, ...GIT_OPTS, input: files.join("\n") + "\n" })
+      .split("\n")
+      .filter(Boolean);
+  } catch {
+    throw new Error("cannot hash working-tree files");
+  }
+}
+
+export interface CommitSignature {
+  sha: string;
+  /** git's %G? code: G good, U good/unknown validity, X/Y expired, R revoked, E unverifiable, B bad, N none. */
+  status: string;
+  subject: string;
+}
+
+/** Signature status of every commit reachable from HEAD but not from `ref`. Strict. */
+export function commitSignatures(cwd: string, ref: string): CommitSignature[] {
+  const range = ref === EMPTY_TREE ? ["HEAD"] : [`${ref}..HEAD`];
+  let out: string;
+  try {
+    out = execFileSync("git", ["log", "-z", "--format=%H%x1f%G?%x1f%s", ...range, "--"], { cwd, ...GIT_OPTS });
+  } catch (error: any) {
+    // A repository whose HEAD is unborn has no commits to judge.
+    if (ref === EMPTY_TREE && /does not have any commits|unknown revision|bad default revision/.test(String(error?.stderr ?? ""))) return [];
+    throw new Error(`cannot read commits since ${baseLabel(ref)}`);
+  }
+  return out.split("\0").filter(Boolean).map((record) => {
+    const [sha, status, subject] = record.replace(/^\n/, "").split("\x1f");
+    return { sha, status, subject: subject ?? "" };
+  });
+}

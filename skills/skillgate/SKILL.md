@@ -87,11 +87,15 @@ prefixes that trigger them (`git commit`, `git push`, `npm publish`).
 | `trivy` | Trivy finds no leaked secrets and no blocking CVEs |
 | `evidence` | a named `file` exists and is non-empty |
 | `not-empty` | a directory at `path` holds at least `min` entries |
-| `instruction-sync` | the agent instruction files still agree with the canonical one |
+| `instruction-sync` | the agent instruction files still agree with the canonical one (`require` names tools that need their own file) |
+| `instruction-refs` | every path the instruction files point at still exists |
 | `no-new` | matches of `pattern` in `glob` did not increase versus the base ref |
 | `no-fewer` | matches of `pattern` in `glob` did not decrease versus the base ref (deleted test cases) |
 | `no-deleted` | every file matching `glob` at the base ref still exists |
+| `unchanged` | every file matching `glob` at the base ref is still byte-identical (snapshots, migrations, CI) |
 | `deps-locked` | every declared dependency is in the lockfile (catches invented packages) |
+| `deps-declared` | every package imported by JS/TS files in `glob` is declared in the nearest package.json |
+| `signed-commits` | every commit since the base ref is signed |
 | `phase` | the active phase's required gates, and every earlier phase's, pass now |
 
 Any gate can carry `when: { command: [...], tool: [...], changed: [...], branch: [...] }`. A gate whose
