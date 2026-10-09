@@ -104,10 +104,11 @@ exit 0
 
   const r = runGates({ gates: [{ id: "trivy-clean", type: "trivy", trivy }] }, dir);
   assert.equal(r.passed, true);
-  assert.match(r.results[0].reason, /secret, vuln:CRITICAL, sbom:cyclonedx/);
+  assert.match(r.results[0].reason, /secret, vuln:CRITICAL, severity summary unavailable, sbom:cyclonedx/);
   const invocations = fs.readFileSync(path.join(dir, "invocations.txt"), "utf8");
   assert.match(invocations, /fs --scanners secret --exit-code 1 --no-progress \./);
   assert.match(invocations, /fs --scanners vuln --severity CRITICAL --exit-code 1 --no-progress \./);
+  assert.match(invocations, /fs --scanners vuln --format json --exit-code 0 --no-progress \./);
   assert.match(invocations, /fs --format cyclonedx --no-progress \./);
 });
 

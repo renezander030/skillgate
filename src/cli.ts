@@ -5,7 +5,8 @@ import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { findSpecPath, loadSpec, parseSpec, specRoot, DEFAULT_SPEC_PATHS, DEFAULT_PHASE_FILE, DEFAULT_RUN_TIMEOUT_MS, type Spec, type PhaseGate } from "./spec.js";
-import { runGates, decideCommand, decideTool, currentPhase, evaluatePhase, type GateResult, type RunResult } from "./core.js";
+import { runGates, decideCommand, decideTool, currentPhase, evaluatePhase, gatesForCommand, type GateResult, type RunResult } from "./core.js";
+import { appendLog, logPath, logPathProblem, summarizeLog, toFailed, type LogRecord } from "./log.js";
 import { checkDrift, formatDiff, DEFAULT_THRESHOLD, discover, pickCanonical } from "./drift.js";
 import { runSync } from "./link.js";
 import { runScaffold, listTemplates } from "./scaffold.js";
@@ -100,11 +101,14 @@ Usage:
                                      opencode), github-actions, or pre-commit enforcement
   skillgate doctor <target|all>      verify policy discovery and one or more integrations
   skillgate explain --command <cmd>  show structural finish-line matching without running gates
+  skillgate explain --commands <f>   replay a command corpus (lines or a decision log; - = stdin)
+  skillgate log [file]               summarize the decision log: blocks per gate and command
   skillgate scaffold [--template]    generate .skillgate/evidence/ with stack templates
   skillgate drift                    report AI instruction-file drift, exit 1 if drifted
   skillgate diff-instructions        show line-level diff between drifted instruction files
   skillgate canonical <file>         set which file is the canonical instruction source
   skillgate sync                     make AGENTS.md canonical and link the rest
+  skillgate sync --create <tools>    also create pointer files for tools without one (claude-code,...)
   skillgate --version
 
 Flags:
@@ -126,6 +130,8 @@ Flags:
   --cache                  check: reuse a passing result only for the exact repo snapshot
   --receipt <file>         check: write a machine-readable execution receipt
   --allow-on-error         gate: allow instead of fail-closed if evaluation errors
+  --log <file>             check/gate: append each verdict as a JSON line (or SKILLGATE_LOG);
+                           keep it outside the worktree or under .git/
   --threshold <0..1>       drift: similarity required to count as in sync (default 0.95)
   --dry-run                sync: show what would change without writing
   --symlink                sync: use symlinks instead of pointer files and copies
@@ -328,6 +334,14 @@ function resolvedZKSpec(): Resolved {
   return resolveSpecAndBase(specPath && fs.existsSync(specPath) ? specPath : null);
 }
 
+/** Append a verdict to the opt-in decision log; never changes the verdict. */
+function recordDecision(workspace: string, record: Omit<LogRecord, "ts" | "workspace">): void {
+  const file = logPath(option("--log"), cwd);
+  if (!file) return;
+  const problem = logPathProblem(file, workspace) ?? appendLog(file, { ts: new Date().toISOString(), workspace, ...record });
+  if (problem) console.error(c(C.dim, `skillgate: ${problem}`));
+}
+
 function printResults(results: GateResult[]): void {
   for (const r of results) {
     const mark = r.status === "skipped" ? c(C.dim, "−") : r.ok ? c(C.green, "✓") : c(C.red, "✗");
@@ -510,26 +524,98 @@ if (cmd === "doctor") {
   process.exit(checks.every((check) => check.ok) ? 0 : 1);
 }
 
+/** Commands from a corpus: one per line, or decision-log JSON lines (their `command`). */
+function readCorpus(source: string): string[] {
+  const text = source === "-" ? fs.readFileSync(0, "utf8") : fs.readFileSync(path.resolve(cwd, source), "utf8");
+  const commands: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    if (trimmed.startsWith("{")) {
+      try {
+        const record = JSON.parse(trimmed);
+        if (typeof record?.command === "string" && record.command.trim() && !record.tool) commands.push(record.command.trim());
+        continue;
+      } catch {
+        /* a command that starts with "{" */
+      }
+    }
+    commands.push(trimmed);
+  }
+  return commands;
+}
+
 if (cmd === "explain") {
   const command = option("--command") ?? "";
-  if (!command) die(2, "explain requires --command <cmd>");
+  const corpus = option("--commands");
+  if (!command && !corpus) die(2, "explain requires --command <cmd> or --commands <file|->");
   const specPath = findSpecPath(cwd);
   if (!specPath) die(2, "no spec found — run `skillgate init`");
   try {
     const spec = loadSpec(specPath);
+    if (corpus) {
+      const commands = readCorpus(corpus);
+      const rows = commands.map((cmdText) => {
+        const analysis = analyzeCommand(cmdText, spec.finishLine ?? []);
+        return { command: cmdText, matched: analysis.matched, patterns: analysis.patterns, gates: analysis.matched ? gatesForCommand(spec, cmdText) : [] };
+      });
+      const gated = rows.filter((row) => row.matched);
+      const byPattern = new Map<string, number>();
+      for (const row of gated) for (const p of row.patterns) byPattern.set(p, (byPattern.get(p) ?? 0) + 1);
+      if (json) {
+        console.log(JSON.stringify({ finishLine: spec.finishLine ?? [], total: rows.length, gated: gated.length, byPattern: Object.fromEntries(byPattern), commands: rows }, null, 2));
+      } else {
+        for (const row of rows) {
+          console.log(`${row.matched ? c(C.red, "MATCH   ") : c(C.dim, "no match")}  ${row.command}${row.matched ? c(C.dim, `  → ${row.gates.join(", ") || "no gates"}`) : ""}`);
+        }
+        console.log("");
+        console.log(`${gated.length} of ${rows.length} commands cross the finish line` + (byPattern.size ? c(C.dim, ` (${[...byPattern].map(([p, n]) => `${p}: ${n}`).join(", ")})`) : ""));
+      }
+      process.exit(0);
+    }
     const analysis = analyzeCommand(command, spec.finishLine ?? []);
+    const gates = analysis.matched ? gatesForCommand(spec, command) : [];
     if (json) {
-      console.log(JSON.stringify({ command, finishLine: spec.finishLine ?? [], ...analysis }, null, 2));
+      console.log(JSON.stringify({ command, finishLine: spec.finishLine ?? [], ...analysis, gates }, null, 2));
     } else {
       console.log(`${analysis.matched ? c(C.red, "MATCH") : c(C.green, "NO MATCH")} · ${command}`);
       console.log(`  policy: ${path.relative(cwd, specPath)}`);
       console.log(`  matched: ${analysis.patterns.length ? analysis.patterns.join(", ") : "none"}`);
+      if (analysis.matched) console.log(`  gates: ${gates.length ? gates.join(", ") : "none"}`);
       for (const segment of analysis.segments) console.log(`  segment: ${segment.normalized.join(" ") || "(empty)"}`);
     }
     process.exit(0);
   } catch (error: any) {
     die(2, error.message);
   }
+}
+
+if (cmd === "log") {
+  const file = args[1] && !args[1].startsWith("-") ? path.resolve(cwd, args[1]) : logPath(undefined, cwd);
+  if (!file) die(2, "usage: skillgate log <file> (or set SKILLGATE_LOG)");
+  let text: string;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch (error: any) {
+    die(2, `cannot read ${file}: ${error.message}`);
+  }
+  const summary = summarizeLog(text);
+  if (json) {
+    console.log(JSON.stringify(summary, null, 2));
+    process.exit(0);
+  }
+  console.log(`${c(C.bold, "skillgate log")} ${c(C.dim, `· ${summary.records} decisions${summary.first ? ` · ${summary.first} → ${summary.last}` : ""}${summary.malformed ? ` · ${summary.malformed} malformed lines skipped` : ""}`)}`);
+  console.log(`  allowed ${summary.allowed} · blocked ${summary.blocked}${summary.errors ? ` (${summary.errors} on evaluation errors)` : ""}`);
+  for (const [event, n] of Object.entries(summary.byEvent)) console.log(c(C.dim, `  ${event}: ${n.allowed} allowed, ${n.blocked} blocked`));
+  if (summary.blockingGates.length) {
+    console.log("\n  gates that blocked most:");
+    for (const g of summary.blockingGates) console.log(`    ${String(g.count).padStart(4)}  ${g.id}`);
+  }
+  if (summary.blockedActions.length) {
+    console.log("\n  blocked commands and tools:");
+    for (const a of summary.blockedActions) console.log(`    ${String(a.count).padStart(4)}  ${a.action}`);
+  }
+  process.exit(0);
 }
 
 if (cmd === "audit") {
@@ -633,6 +719,15 @@ if (cmd === "check") {
       if (cache && snapshot) writeCachedResult(r.workspace, snapshot, result);
     }
     if (receiptFile && snapshot) writeReceipt(receiptFile, snapshot, result, cacheHit ? "cache" : "executed");
+    recordDecision(r.workspace, {
+      via: "check",
+      event: "check",
+      decision: result.passed ? "allow" : "block",
+      reason: result.passed ? `all ${applied(result)} applicable gates passed` : `${result.failed.length} of ${result.results.length} gates unmet`,
+      ...(forCommand != null ? { command: forCommand } : {}),
+      failed: toFailed(result.failed),
+      durationMs: result.durationMs,
+    });
   } catch (e: any) {
     console.error(c(C.red, `skillgate: ${e.message}`));
     process.exit(2);
@@ -693,9 +788,12 @@ if (cmd === "drift") {
 }
 
 if (cmd === "sync") {
+  const create = option("--create");
+  if (args.includes("--create") && (!create || create.startsWith("--"))) die(2, "sync --create requires tool ids, e.g. claude-code,gemini-cli");
   const { lines } = runSync(cwd, {
     dryRun: args.includes("--dry-run"),
     symlink: args.includes("--symlink"),
+    create: create?.split(",").map((id) => id.trim()).filter(Boolean),
   });
   for (const l of lines) console.log(l);
   process.exit(0);
@@ -852,9 +950,20 @@ if (cmd === "gate") {
     : option("--tool") ?? (payloadTool && !SHELL_TOOLS.has(payloadTool) ? payloadTool : undefined);
   const command = event === "stop" ? "" : tool ?? ((option("--command") ?? commandFromPayload(payload)) ?? "").trim();
   const specPath = findSpecPath(cwd);
+  let logWorkspace = specPath ? specRoot(specPath) : (repoRoot(cwd) ?? cwd);
+  const started = Date.now();
 
   /** Answer in the host's protocol and exit. */
   const answer = (decision: "allow" | "block", reason: string, failed: GateResult[] = [], extra: Record<string, unknown> = {}): never => {
+    recordDecision(logWorkspace, {
+      via: "gate",
+      event: event === "stop" ? "stop" : tool ? "tool" : "command",
+      decision,
+      reason,
+      ...(tool ? { tool } : event === "stop" ? {} : { command }),
+      failed: toFailed(failed),
+      durationMs: Date.now() - started,
+    });
     const details = failed.map((f) => `  · ${f.id}: ${f.reason}`).join("\n");
     const guidance = event === "stop"
       ? `skillgate: the work is not done — ${reason}.\n${details}\nFix these before you finish. Do not weaken or bypass the gates.`
@@ -885,6 +994,7 @@ if (cmd === "gate") {
 
   try {
     const r = resolveSpecAndBase(specPath && fs.existsSync(specPath) ? specPath : null);
+    logWorkspace = r.workspace;
     const timeoutArg = option("--timeout");
     const timeoutMs = timeoutArg == null ? undefined : Number(timeoutArg);
     if (timeoutMs != null && (!Number.isInteger(timeoutMs) || timeoutMs < 1)) throw new Error("--timeout must be a positive integer in milliseconds");

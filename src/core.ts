@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { globSync } from "tinyglobby";
@@ -8,14 +9,19 @@ import {
   type GateWhen,
   type PhaseGate,
   type TrivyGate,
+  type CommandGate,
+  INSTRUCTION_TOOL_IDS,
+  toolId,
   DEFAULT_PHASE_FILE,
   DEFAULT_COMMAND_TIMEOUT_MS,
   DEFAULT_MAX_BYTES,
   DEFAULT_NOT_EMPTY_MIN,
   DEFAULT_RUN_TIMEOUT_MS,
 } from "./spec.js";
-import { checkDrift, DEFAULT_THRESHOLD } from "./drift.js";
-import { readFileAtRef, listFilesAtRef, matchesGlob, changedFiles, currentBranch, baseLabel, repoRelativePath } from "./git.js";
+import { checkDrift, DEFAULT_THRESHOLD, TOOL_SPECS } from "./drift.js";
+import { readFileAtRef, listFilesAtRef, matchesGlob, changedFiles, currentBranch, baseLabel, repoRelativePath, blobsAtRef, hashBlob, hashWorkingFiles, commitSignatures } from "./git.js";
+import { findImports, packageName, nearestManifest, isDeclared } from "./imports.js";
+import { checkInstructionRefs } from "./refs.js";
 import { checkManifest, SUPPORTED_MANIFESTS } from "./deps.js";
 import { isStructuredCommandMatch } from "./command.js";
 import { runShellCommand } from "./process.js";
@@ -138,6 +144,31 @@ function countMatchingLines(text: string, re: RegExp, onFirst?: (i: number) => v
   return n;
 }
 
+/**
+ * Changed files for a command gate: `SKILLGATE_CHANGED_FILES` names a temporary
+ * file listing the existing files changed versus the base (one per line, filtered
+ * by the gate's `when.changed` globs), and `SKILLGATE_CHANGED_COUNT` holds the
+ * count. Both are unset when no base resolves, so a command can fall back to a
+ * full run instead of checking nothing.
+ */
+function changedFilesEnv(gate: CommandGate, cwd: string, baseRef: string | undefined): { env: NodeJS.ProcessEnv; cleanup: () => void } | null {
+  if (!baseRef) return null;
+  const all = changedFiles(cwd, baseRef);
+  if (all == null) return null;
+  const globs = gate.when?.changed;
+  const files = all
+    .filter((file) => !globs || globs.some((glob) => matchesGlob(file, glob)))
+    .filter((file) => fs.existsSync(path.resolve(cwd, file)))
+    .sort();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "skillgate-changed-"));
+  const list = path.join(dir, "changed-files.txt");
+  fs.writeFileSync(list, files.map((file) => file + "\n").join(""));
+  return {
+    env: { SKILLGATE_CHANGED_FILES: list, SKILLGATE_CHANGED_COUNT: String(files.length) },
+    cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+  };
+}
+
 /** A pattern gate hit a read limit; the gate fails with this message. */
 class ScanLimit extends Error {}
 
@@ -225,6 +256,35 @@ function runTrivyCommand(bin: string, args: string[], cwd: string, timeout: numb
   return { ok: true, stdout: String(result.stdout || "") };
 }
 
+const SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"];
+
+/**
+ * Count vulnerabilities at every severity after the blocking scan passed, so a pass
+ * never reads as "nothing found" while lower-severity findings ship. Informational:
+ * the blocking decision was already made by the severity-filtered scan.
+ */
+function trivySummary(bin: string, target: string, blocking: string[], ignoreUnfixed: boolean | undefined, cwd: string, timeout: number): string {
+  const args = ["fs", "--scanners", "vuln", "--format", "json", "--exit-code", "0", "--no-progress"];
+  if (ignoreUnfixed) args.push("--ignore-unfixed");
+  args.push(target);
+  const res = runTrivyCommand(bin, args, cwd, timeout);
+  if (!res.ok) return "severity summary unavailable";
+  const counts = new Map<string, number>();
+  try {
+    const report = JSON.parse(res.stdout);
+    for (const result of Array.isArray(report?.Results) ? report.Results : []) {
+      for (const vuln of Array.isArray(result?.Vulnerabilities) ? result.Vulnerabilities : []) {
+        const severity = String(vuln?.Severity ?? "UNKNOWN").toUpperCase();
+        counts.set(severity, (counts.get(severity) ?? 0) + 1);
+      }
+    }
+  } catch {
+    return "severity summary unavailable";
+  }
+  const below = SEVERITY_ORDER.filter((s) => !blocking.includes(s) && counts.get(s)).map((s) => `${counts.get(s)} ${s}`);
+  return below.length ? `not blocking: ${below.join(", ")}` : "no findings below the threshold";
+}
+
 function checkTrivyGate(gate: TrivyGate, cwd: string, remainingMs?: number): GateResult {
   const base = { id: gate.id, type: gate.type };
   const trivy = gate.trivy ?? "trivy";
@@ -250,6 +310,7 @@ function checkTrivyGate(gate: TrivyGate, cwd: string, remainingMs?: number): Gat
     ran.push(`vuln:${severity.join(",")}`);
     const res = runTrivyCommand(trivy, args, cwd, nextTimeout());
     if (!res.ok) return { ...base, ok: false, reason: res.reason };
+    if (gate.summary !== false) ran.push(trivySummary(trivy, target, severity, gate.ignoreUnfixed, cwd, nextTimeout()));
   }
 
   if (gate.sbom !== false) {
@@ -303,7 +364,13 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
       }
       case "command": {
         const timeout = Math.max(1, Math.min(gate.timeout ?? DEFAULT_COMMAND_TIMEOUT_MS, opts.remainingMs ?? Number.POSITIVE_INFINITY));
-        const result = runShellCommand(gate.run, cwd, timeout);
+        const changed = changedFilesEnv(gate, cwd, opts.baseRef);
+        let result;
+        try {
+          result = runShellCommand(gate.run, cwd, timeout, changed?.env);
+        } finally {
+          changed?.cleanup();
+        }
         if (result.timedOut) return { ...base, ok: false, reason: `command timed out after ${timeout}ms` };
         if (result.outputLimited) return { ...base, ok: false, reason: "command exceeded output limit" };
         if (result.error) return { ...base, ok: false, reason: `\`${gate.run}\` failed: ${result.error.message}` };
@@ -333,6 +400,21 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
       case "instruction-sync": {
         const threshold = gate.threshold ?? DEFAULT_THRESHOLD;
         const res = checkDrift(cwd, threshold);
+        const uncovered = (gate.require ?? []).map(toolId).filter((id) => !res.entries.some((e) => toolId(e.tool) === id));
+        if (uncovered.length) {
+          const names = uncovered.map((id) => {
+            const spec = TOOL_SPECS[INSTRUCTION_TOOL_IDS.indexOf(id)];
+            return `${spec.name} (${spec.patterns[0]})`;
+          });
+          const shadow = uncovered.includes("claude-code") && fs.existsSync(path.resolve(cwd, "CLAUDE.local.md"))
+            ? "; CLAUDE.local.md without CLAUDE.md also turns off Claude Code's AGENTS.md fallback"
+            : "";
+          return {
+            ...base,
+            ok: false,
+            reason: `no instruction file for ${names.join(", ")} — the tool may never load the shared rules${shadow} (run \`skillgate sync --create ${uncovered.join(",")}\`)`,
+          };
+        }
         if (res.entries.length === 0) {
           return { ...base, ok: true, reason: `no agent instruction files found` };
         }
@@ -465,6 +547,118 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
         }
         return { ...base, ok: true, reason: `${declared} declared dependencies locked (${manifests.join(", ")})` };
       }
+      case "instruction-refs": {
+        const res = checkInstructionRefs(cwd, gate.ignore ?? []);
+        if (res.files.length === 0) return { ...base, ok: true, reason: "no agent instruction files found" };
+        if (res.missing.length === 0) {
+          return { ...base, ok: true, reason: `${res.checked} path references in ${res.files.length} instruction files resolve` };
+        }
+        const first = res.missing[0];
+        const sample = res.missing.slice(0, 3).map((m) => `${m.file}:${m.line} → ${m.ref}`).join(", ");
+        return {
+          ...base,
+          ok: false,
+          reason: `${res.missing.length} stale reference${res.missing.length === 1 ? "" : "s"} in instruction files: ${sample}${res.missing.length > 3 ? " …" : ""} — fix the path or add it to ignore`,
+          location: { file: first.file, line: first.line },
+        };
+      }
+      case "unchanged": {
+        if (!opts.baseRef) {
+          return { ...base, ok: false, reason: `no git base ref to diff against — pass --base <ref> or run in a repo with an upstream (fail-closed)` };
+        }
+        const ignore = gate.ignore ?? [];
+        const baseline = [...blobsAtRef(cwd, opts.baseRef)].filter(([p]) => matchesGlob(p, gate.glob, ignore) && !IGNORE.some((ig) => matchesGlob(p, ig)));
+        const short = baseLabel(opts.baseRef);
+        if (baseline.length === 0 && !gate.allowEmpty && !opts.allowEmptyGlobs) {
+          const workFiles = globSync(gate.glob, { cwd, dot: true, ignore: [...IGNORE, ...ignore] });
+          if (workFiles.length === 0) return { ...base, ok: false, reason: noOpReason(gate.glob) };
+          return { ...base, ok: true, reason: `no ${gate.glob} files at ${short} to protect (${workFiles.length} new)` };
+        }
+        const deleted = new Set<string>();
+        const modified: string[] = [];
+        const files: [string, string][] = [];
+        for (const [p, entry] of baseline) {
+          const full = path.resolve(cwd, p);
+          let stat: fs.Stats;
+          try {
+            stat = fs.lstatSync(full);
+          } catch {
+            deleted.add(p);
+            continue;
+          }
+          // A symlink is stored as its target path; compare that, never the file it points at.
+          if (entry.mode === "120000" || stat.isSymbolicLink()) {
+            if (!(entry.mode === "120000" && stat.isSymbolicLink() && hashBlob(cwd, fs.readlinkSync(full)) === entry.oid)) modified.push(p);
+          } else if (!stat.isFile()) {
+            modified.push(p);
+          } else {
+            files.push([p, entry.oid]);
+          }
+        }
+        const hashes = hashWorkingFiles(cwd, files.map(([p]) => p));
+        files.forEach(([p, oid], i) => { if (hashes[i] !== oid) modified.push(p); });
+        const touched = [...modified, ...deleted].sort();
+        const deletedLabel = (p: string) => (deleted.has(p) ? " (deleted)" : "");
+        return touched.length
+          ? {
+              ...base,
+              ok: false,
+              reason: `${touched.length} protected file(s) matching ${gate.glob} changed since ${short}: ${touched.slice(0, 3).map((p) => `${p}${deletedLabel(p)}`).join(", ")}${touched.length > 3 ? " …" : ""} — restore them; change them only in a separate, reviewed commit`,
+              location: { file: touched[0] },
+            }
+          : { ...base, ok: true, reason: `${baseline.length} ${gate.glob} file(s) unchanged vs ${short}` };
+      }
+      case "deps-declared": {
+        const ignore = gate.ignore ?? [];
+        const files = globSync(gate.glob, { cwd, dot: true, ignore: [...IGNORE, ...ignore] }).sort();
+        if (files.length === 0 && !gate.allowEmpty && !opts.allowEmptyGlobs) return { ...base, ok: false, reason: noOpReason(gate.glob) };
+        const scan = new Scanner(gate.maxBytes, opts.remainingMs);
+        const manifests = new Map<string, ReturnType<typeof nearestManifest>>();
+        const root = path.resolve(cwd);
+        const missing = new Map<string, { file: string; line: number }>();
+        let imports = 0;
+        for (const f of files) {
+          const text = scan.file(cwd, f, files.length);
+          if (text == null) return { ...base, ok: false, reason: `matched file disappeared: ${f}`, location: { file: f } };
+          const manifest = nearestManifest(path.dirname(path.resolve(cwd, f)), root, manifests);
+          if (!manifest) return { ...base, ok: false, reason: `no package.json at or above ${f}`, location: { file: f } };
+          for (const ref of findImports(text)) {
+            const pkg = packageName(ref.specifier);
+            if (!pkg) continue;
+            imports++;
+            if (isDeclared(pkg, manifest, ref.typeOnly) || gate.allow?.some((glob) => matchesGlob(pkg, glob))) continue;
+            const key = `${path.relative(root, manifest.file).split(path.sep).join("/") || "package.json"}\0${pkg}`;
+            if (!missing.has(key)) missing.set(key, { file: f, line: ref.line });
+          }
+        }
+        if (missing.size === 0) return { ...base, ok: true, reason: `${imports} package imports declared (${files.length} files)` };
+        const entries = [...missing].map(([key, at]) => ({ manifest: key.split("\0")[0], pkg: key.split("\0")[1], ...at }));
+        const sample = entries.slice(0, 5).map((e) => `${e.pkg} (${e.file}:${e.line})`).join(", ");
+        return {
+          ...base,
+          ok: false,
+          reason: `${entries.length} imported package${entries.length === 1 ? " is" : "s are"} not declared in ${entries[0].manifest}: ${sample}${entries.length > 5 ? " …" : ""} — add it to the manifest or remove the import`,
+          location: { file: entries[0].file, line: entries[0].line },
+        };
+      }
+      case "signed-commits": {
+        if (!opts.baseRef) {
+          return { ...base, ok: false, reason: `no git base ref to diff against — pass --base <ref> or run in a repo with an upstream (fail-closed)` };
+        }
+        const accepted = gate.trust === "verified" ? ["G", "U"] : ["G", "U", "X", "Y", "E"];
+        const commits = commitSignatures(cwd, opts.baseRef);
+        const short = baseLabel(opts.baseRef);
+        if (commits.length === 0) return { ...base, ok: true, reason: `no commits since ${short}` };
+        const bad = commits.filter((commit) => !accepted.includes(commit.status));
+        const label = (status: string) => ({ N: "unsigned", B: "bad signature", R: "revoked key", E: "cannot be verified", X: "expired signature", Y: "expired key" } as Record<string, string>)[status] ?? `status ${status}`;
+        return bad.length
+          ? {
+              ...base,
+              ok: false,
+              reason: `${bad.length} of ${commits.length} commit(s) since ${short} not ${gate.trust === "verified" ? "verified" : "signed"}: ${bad.slice(0, 3).map((c) => `${c.sha.slice(0, 12)} ${label(c.status)} "${c.subject}"`).join(", ")}${bad.length > 3 ? " …" : ""}`,
+            }
+          : { ...base, ok: true, reason: `${commits.length} commit(s) since ${short} ${gate.trust === "verified" ? "verified" : "signed"}` };
+      }
       default:
         return { ...base, ok: false, reason: `unknown gate type` };
     }
@@ -581,4 +775,18 @@ export function decideCommand(spec: Spec, cwd: string, command: string, opts: Ru
         command,
         result,
       };
+}
+
+/**
+ * Gates that apply to `command` by their `when.command` / `when.tool` scope alone.
+ * `when.changed` and `when.branch` depend on the workspace and are not judged here.
+ */
+export function gatesForCommand(spec: Spec, command: string): string[] {
+  return spec.gates
+    .filter((gate) => {
+      const when = gate.when;
+      if (!when?.command && !when?.tool) return true;
+      return !!when.command && isStructuredCommandMatch(command, when.command);
+    })
+    .map((gate) => gate.id);
 }

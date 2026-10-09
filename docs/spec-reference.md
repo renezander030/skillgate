@@ -98,6 +98,26 @@ test/lint/build commands, not anything that hits the network.
 
 On timeout the gate returns a deterministic `command timed out after Nms` reason.
 
+When a base ref resolves, the command also receives the files changed against it:
+
+| Variable | Value |
+|----------|-------|
+| `SKILLGATE_CHANGED_FILES` | path of a temporary file listing the changed files, one per line, relative to the policy's directory |
+| `SKILLGATE_CHANGED_COUNT` | how many files the list holds |
+
+The list covers committed, staged, unstaged and untracked changes, leaves out
+deleted files, and keeps only files matching the gate's `when.changed` globs when
+it has them. Without a base both variables are unset, so a command can fall back
+to a full run instead of checking nothing:
+
+```yaml
+- id: lint-changed
+  type: command
+  run: 'if [ -n "$SKILLGATE_CHANGED_FILES" ]; then xargs -r npx eslint < "$SKILLGATE_CHANGED_FILES"; else npx eslint .; fi'
+  when:
+    changed: ["src/**/*.ts"]
+```
+
 ### `trivy`
 
 Run Trivy as a first-class security gate. By default this blocks on any leaked
@@ -114,7 +134,10 @@ secret, any `CRITICAL` vulnerability, or failure to generate a CycloneDX SBOM.
 ```
 
 The secret scan runs separately from the vulnerability scan, so CVE severity
-filtering does not hide leaked credentials. Set `trivy` when the binary is not on
+filtering does not hide leaked credentials. After a passing vulnerability scan,
+one more JSON scan counts the findings below the blocking severities and the gate
+reports them (`not blocking: 12 HIGH, 3 MEDIUM`). The count is informational and
+never changes the verdict; set `summary: false` to skip it. Set `trivy` when the binary is not on
 `PATH`, or `ignoreUnfixed: true` when the vulnerability policy should ignore
 unfixed CVEs.
 
@@ -154,7 +177,36 @@ agents are reading different rulebooks. Run `skillgate sync` to fix, or
 - id: instructions-in-sync
   type: instruction-sync
   threshold: 0.95              # optional, 0..1, default 0.95
+  require: [claude-code, gemini-cli]   # optional
 ```
+
+`require` names tools that must have their own instruction file, in sync with or
+linked to the canonical one. Without it, a repository with only AGENTS.md passes,
+yet some tools read AGENTS.md only through a fallback that can be switched off
+(Claude Code skips it when, for example, only a personal `CLAUDE.local.md` is
+present). Tool ids: `agents-md`, `claude-code`, `cursor`, `github-copilot`,
+`gemini-cli`, `cline`, `windsurf`, `jetbrains-junie`. `skillgate sync --create
+claude-code,gemini-cli` writes the missing files as `@AGENTS.md` pointers (or
+synced copies for tools without import support).
+
+### `instruction-refs`
+
+Every repository path an instruction file points at must exist: `@imports`
+(`@docs/rules.md`), relative Markdown links, and code spans that name a
+directory-qualified path (`src/cli.ts`, `docs/`). Rules about files that are gone
+send the agent after a repository that no longer exists.
+
+```yaml
+- id: instruction-refs
+  type: instruction-refs
+  ignore: ["dist/**"]          # optional: referenced paths to skip
+```
+
+Fenced code blocks, URLs, absolute and home paths, and bare file names are not
+judged. A slashed code span counts as a path only when it has a file extension,
+ends with `/`, or its first segment exists, so `origin/main` and `owner/repo` are
+left alone. References resolve against the instruction file's directory or the
+repository root. Failures point at `file:line`.
 
 ### `no-new`, `no-fewer`, `no-deleted` (diff-aware)
 
@@ -187,6 +239,64 @@ and extglobs. Historical reads are scoped to the policy's workspace.
 
 `no-fewer` catches a suite made green by deleting test cases inside files that
 still exist, which `no-deleted` (whole files) and `no-new` (added skips) miss.
+
+### `unchanged` (diff-aware)
+
+Every file matching `glob` that existed at the base must still exist with
+identical content. Use it for the files that define "correct": snapshots and
+golden outputs, migrations that already ran, CI workflows, lint configuration.
+An agent that edits them to make a check pass is blocked; new files are allowed.
+
+```yaml
+- id: protected
+  type: unchanged
+  glob: "{**/__snapshots__/**,migrations/**,.github/workflows/**}"
+  ignore: ["migrations/README.md"]   # optional
+```
+
+Content is compared the way Git would store it, so line-ending normalization
+from `.gitattributes` does not count as a change. Like the other diff-aware
+gates it fails closed without a base. Change a protected file in a separate,
+reviewed commit, or pin the policy with `--pin`.
+
+### `signed-commits` (diff-aware)
+
+Every commit between the base and HEAD must be signed. Scope it to the push:
+
+```yaml
+- id: signed
+  type: signed-commits
+  trust: signed                # optional: signed (default) or verified
+  when:
+    command: ["git push"]
+```
+
+`signed` accepts any signature Git did not reject, including one whose key is not
+in the local keyring. `verified` requires a good signature Git can check (GPG
+trust, or `gpg.ssh.allowedSignersFile` for SSH signing). Unsigned commits, bad
+signatures and revoked keys always fail. No commits since the base passes.
+
+### `deps-declared`
+
+Every package a JavaScript or TypeScript file imports must be declared in the
+nearest `package.json` (dependencies, devDependencies, optionalDependencies or
+peerDependencies). An import that works only because another package hoisted it,
+or because it is installed globally, fails for the next user; this catches it
+offline. Pair it with `deps-locked`, which checks the manifest against the lockfile.
+
+```yaml
+- id: deps-declared
+  type: deps-declared
+  glob: "src/**/*.{ts,tsx,js,mjs,cjs}"
+  allow: ["@/*", "virtual:*"]  # optional: aliases treated as declared
+```
+
+`import … from`, `export … from`, side-effect imports, `require()` and dynamic
+`import()` with a literal specifier are read; comments are ignored. Relative
+paths, `#subpath` imports, protocol specifiers (`node:`, `bun:`) and Node
+builtins are skipped, as are a package's imports of itself. A type-only import is
+also satisfied by `@types/<name>`. Workspace packages answer to their own
+manifest.
 
 ### `deps-locked`
 
@@ -363,7 +473,31 @@ explicit ignored gate inputs and symlink file contents. Failing or malformed
 results are never reused. A workspace change during evaluation blocks a passing
 receipt. Receipt outputs must not overlap gate input paths or globs.
 
-Cache reuse applies to local file, directory, pattern, diff, and phase checks.
-Commands, Trivy, TruffleHog, reviews, instruction selection, and dependency checks
-always execute again because their complete inputs are not represented by the
-snapshot. With `--json`, `cacheDisabledReason` explains a requested cache bypass.
+Cache reuse applies to local file, directory, pattern, diff (including
+`unchanged`), and phase checks. Commands, Trivy, TruffleHog, reviews, instruction
+selection and references, signed commits, and dependency checks always execute
+again because their complete inputs are not represented by the snapshot. With `--json`, `cacheDisabledReason` explains a requested cache bypass.
+
+## Decision log
+
+`--log <file>` on `check` and `gate`, or `SKILLGATE_LOG=<file>`, appends every
+verdict as one JSON line: time, `via` (`gate` or `check`), `event` (`command`,
+`tool`, `stop`, `check`), `decision`, `reason`, the judged command or tool, the
+failed gate ids with their reasons, and the duration. Agent hooks call `gate` for
+every shell command, so the log also records the commands that were allowed.
+
+Keep the log outside the worktree, or under `.git/` (`.git/skillgate/decisions.jsonl`
+in a regular checkout). A path inside the worktree would change the snapshot the
+gates judge, so it is refused. Logging never changes a verdict: a log that cannot
+be written is reported on stderr and skipped.
+
+```bash
+skillgate log .git/skillgate/decisions.jsonl          # blocks per gate, blocked commands
+skillgate log --json                                   # same, from SKILLGATE_LOG
+skillgate explain --commands .git/skillgate/decisions.jsonl   # replay against today's finishLine
+```
+
+`explain --commands <file>` reads one command per line (`#` comments allowed) or
+decision-log records, and reports which commands cross the finish line, which
+pattern matched, and which gates their `when.command` scope would run. Pass `-`
+to read stdin. Use it before you change `finishLine` or a `when` block.

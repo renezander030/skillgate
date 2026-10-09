@@ -54,9 +54,10 @@ child.once("close", (code, signal) => {
 });
 `;
 
-export function runShellCommand(command: string, cwd: string, timeout: number): CommandExecution {
+export function runShellCommand(command: string, cwd: string, timeout: number, env?: NodeJS.ProcessEnv): CommandExecution {
   const result = spawnSync(process.execPath, ["-e", SUPERVISOR, command, cwd, String(timeout)], {
     cwd,
+    ...(env ? { env: { ...process.env, ...env } } : {}),
     encoding: "utf8",
     timeout: timeout + 5_000,
     killSignal: "SIGKILL",

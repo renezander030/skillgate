@@ -175,6 +175,10 @@
               "items": { "enum": ["UNKNOWN", "LOW", "MEDIUM", "HIGH", "CRITICAL"] },
               "description": "Vulnerability severities that block. Default [\"CRITICAL\"]."
             },
+            "summary": {
+              "type": "boolean",
+              "description": "After a passing vulnerability scan, report the counts below the blocking severities. Default true."
+            },
             "sbom": {
               "type": "boolean",
               "description": "Also require Trivy to generate a CycloneDX SBOM. Default true."
@@ -212,7 +216,25 @@
               "minimum": 0,
               "maximum": 1,
               "description": "Similarity required to count as in sync (default 0.95)."
+            },
+            "require": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "enum": ["agents-md", "claude-code", "cursor", "github-copilot", "gemini-cli", "cline", "windsurf", "jetbrains-junie"] },
+              "description": "Tools that must have their own instruction file, in sync or linked to the canonical one."
             }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type"],
+          "properties": {
+            "id": { "type": "string" },
+            "description": { "type": "string" },
+            "when": { "$ref": "#/definitions/when" },
+            "type": { "const": "instruction-refs" },
+            "ignore": { "type": "array", "items": { "type": "string" }, "description": "Globs of referenced paths to skip." }
           }
         },
         {
@@ -334,6 +356,48 @@
               }
             },
             "current": { "type": "string", "description": "Plain-text file naming the active phase. Default .skillgate/phase; missing = the first phase." }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "glob"],
+          "properties": {
+            "id": { "type": "string" },
+            "description": { "type": "string" },
+            "when": { "$ref": "#/definitions/when" },
+            "type": { "const": "unchanged" },
+            "glob": { "type": "string", "description": "Files that exist at the base ref and must stay byte-identical." },
+            "ignore": { "type": "array", "items": { "type": "string" }, "description": "Extra globs that may change." },
+            "allowEmpty": { "type": "boolean", "description": "Allow the glob to match no files. Default false." }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "glob"],
+          "properties": {
+            "id": { "type": "string" },
+            "description": { "type": "string" },
+            "when": { "$ref": "#/definitions/when" },
+            "type": { "const": "deps-declared" },
+            "glob": { "type": "string", "description": "JavaScript/TypeScript source files to scan." },
+            "ignore": { "type": "array", "items": { "type": "string" }, "description": "Extra globs to exclude." },
+            "allow": { "type": "array", "items": { "type": "string" }, "description": "Package names (globs) treated as declared: path aliases, virtual modules." },
+            "maxBytes": { "type": "integer", "minimum": 1, "description": "Largest file (bytes) the gate reads. Default 10485760 (10 MiB)." },
+            "allowEmpty": { "type": "boolean", "description": "Allow the glob to match no files. Default false." }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type"],
+          "properties": {
+            "id": { "type": "string" },
+            "description": { "type": "string" },
+            "when": { "$ref": "#/definitions/when" },
+            "type": { "const": "signed-commits" },
+            "trust": { "enum": ["signed", "verified"], "description": "signed (default): any signature git did not reject. verified: a good signature git can check." }
           }
         }
       ]

@@ -9,12 +9,20 @@ import {
   pointsTo,
   IMPORT_CAPABLE,
   LINK_HEADER,
+  TOOL_SPECS,
   type Source,
 } from "./drift.js";
+import { toolId } from "./spec.js";
 
 export interface SyncOptions {
   dryRun?: boolean;
   symlink?: boolean;
+  /**
+   * Tool ids (`claude-code`, `gemini-cli`, ...) to give their own instruction file
+   * when they have none: an `@AGENTS.md` pointer for import-capable tools, a synced
+   * copy otherwise. Tools that only reach AGENTS.md through a fallback may skip it.
+   */
+  create?: string[];
 }
 
 export interface SyncResult {
@@ -101,6 +109,24 @@ export function runSync(root: string, opts: SyncOptions = {}): SyncResult {
       }
       lines.push(`  ~ ${label}  ${verb}synced copy (${src.tool} has no import support)`);
       if (!dryRun) fs.writeFileSync(filePath, desired);
+    }
+    changed++;
+  }
+
+  for (const id of opts.create ?? []) {
+    const spec = TOOL_SPECS.find((t) => toolId(t.name) === toolId(id));
+    if (!spec) {
+      lines.push(`  ! ${id}  unknown tool (known: ${TOOL_SPECS.map((t) => toolId(t.name)).join(", ")})`);
+      continue;
+    }
+    if (spec.name === "AGENTS.md" || sources.some((src) => src.tool === spec.name)) continue;
+    const rel = spec.patterns.find((p) => !/[*?{}[\]]/.test(p))!;
+    const filePath = path.join(root, rel.split("/").join(path.sep));
+    const content = IMPORT_CAPABLE.has(spec.name) ? "@AGENTS.md\n" : LINK_HEADER + "\n\n" + canonContent;
+    lines.push(`  + ${rel}  ${verb}created ${IMPORT_CAPABLE.has(spec.name) ? "as an @AGENTS.md pointer" : "as a synced copy"} for ${spec.name}`);
+    if (!dryRun) {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, content);
     }
     changed++;
   }
