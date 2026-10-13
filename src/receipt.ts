@@ -4,12 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import type { RunResult } from "./core.js";
-import type { Spec } from "./spec.js";
-import { globSync } from "tinyglobby";
-import { currentBranch, matchesGlob } from "./git.js";
-import { findDependencyLockfile } from "./deps.js";
+import { DEFAULT_PHASE_FILE, type Spec } from "./spec.js";
+import { currentBranch, inScan, scanFiles } from "./git.js";
+import { findDependencyLockfile, NODE_LOCKFILES, PYTHON_LOCKFILES, SUPPORTED_MANIFESTS } from "./deps.js";
 
-const SCAN_IGNORE = ["**/node_modules/**", "**/.git/**", "dist/**"];
 const CACHE_TYPES = new Set(["file-exists", "file-contains", "evidence", "not-empty", "absent", "no-new", "no-fewer", "no-deleted", "unchanged", "phase"]);
 
 /** Reuse only checks whose complete inputs can be observed in the local snapshot. */
@@ -24,17 +22,17 @@ function gateFiles(spec: Spec, cwd: string): string[] {
   const add = (file: string) => files.add(path.relative(cwd, path.resolve(cwd, file)).split(path.sep).join("/"));
   for (const gate of spec.gates) {
     if ("file" in gate) (Array.isArray(gate.file) ? gate.file : [gate.file]).forEach(add);
-    if ("glob" in gate) globSync(gate.glob, { cwd, dot: true, ignore: [...SCAN_IGNORE, ...(gate.ignore ?? [])] }).forEach(add);
+    if ("glob" in gate) scanFiles(cwd, gate.glob, gate.ignore).forEach(add);
     if (gate.type === "not-empty") {
       add(gate.path);
       try { fs.readdirSync(path.resolve(cwd, gate.path)).forEach(file => add(path.join(gate.path, file))); } catch { /* existence is hashed below */ }
     }
-    if (gate.type === "phase") add(gate.current ?? ".skillgate/phase");
+    if (gate.type === "phase") add(gate.current ?? DEFAULT_PHASE_FILE);
     if (gate.type === "deps-locked") {
-      const manifests = gate.manifest == null ? ["package.json", "pyproject.toml"] : Array.isArray(gate.manifest) ? gate.manifest : [gate.manifest];
+      const manifests = gate.manifest == null ? SUPPORTED_MANIFESTS : Array.isArray(gate.manifest) ? gate.manifest : [gate.manifest];
       for (const file of manifests) {
         add(file);
-        for (const lock of ["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "uv.lock", "poetry.lock", "pdm.lock"]) add(path.join(path.dirname(file), lock));
+        for (const lock of [...NODE_LOCKFILES, ...PYTHON_LOCKFILES]) add(path.join(path.dirname(file), lock));
         const selected = findDependencyLockfile(path.resolve(cwd, file));
         if (selected) add(selected);
       }
@@ -45,10 +43,11 @@ function gateFiles(spec: Spec, cwd: string): string[] {
 
 export function receiptPathIsInput(spec: Spec, cwd: string, file: string): boolean {
   const rel = path.relative(cwd, file).split(path.sep).join("/");
-  return gateFiles(spec, cwd).includes(rel) || spec.gates.some(gate => "glob" in gate && matchesGlob(rel, gate.glob, [...SCAN_IGNORE, ...(gate.ignore ?? [])]));
+  return gateFiles(spec, cwd).includes(rel) || spec.gates.some(gate => "glob" in gate && inScan(rel, gate.glob, gate.ignore));
 }
 
-const EVALUATOR_VERSION = JSON.parse(
+/** The installed skillgate package version: binds cache snapshots, `--version` and installed hooks. */
+export const EVALUATOR_VERSION = JSON.parse(
   fs.readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
 ).version as string;
 

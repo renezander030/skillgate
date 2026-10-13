@@ -2,7 +2,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { globSync } from "tinyglobby";
 import {
   type Spec,
   type Gate,
@@ -17,9 +16,10 @@ import {
   DEFAULT_MAX_BYTES,
   DEFAULT_NOT_EMPTY_MIN,
   DEFAULT_RUN_TIMEOUT_MS,
+  DIFF_GATE_TYPES,
 } from "./spec.js";
 import { checkDrift, DEFAULT_THRESHOLD, TOOL_SPECS } from "./drift.js";
-import { readFileAtRef, listFilesAtRef, matchesGlob, changedFiles, currentBranch, baseLabel, repoRelativePath, blobsAtRef, hashBlob, hashWorkingFiles, commitSignatures } from "./git.js";
+import { readFileAtRef, listFilesAtRef, matchesGlob, scanFiles, inScan, changedFiles, currentBranch, baseLabel, repoRelativePath, blobsAtRef, hashBlob, hashWorkingFiles, commitSignatures } from "./git.js";
 import { findImports, packageName, nearestManifest, isDeclared } from "./imports.js";
 import { checkInstructionRefs } from "./refs.js";
 import { checkManifest, SUPPORTED_MANIFESTS } from "./deps.js";
@@ -127,7 +127,6 @@ function runOne(gate: Gate, cwd: string, opts: RunOptions): GateResult {
   return result;
 }
 
-const IGNORE = ["**/node_modules/**", "**/.git/**", "dist/**"];
 const DEFAULT_TRIVY_SCANNERS: NonNullable<TrivyGate["scanners"]> = ["vuln", "secret"];
 const DEFAULT_TRIVY_SEVERITY: NonNullable<TrivyGate["severity"]> = ["CRITICAL"];
 
@@ -324,8 +323,19 @@ function checkTrivyGate(gate: TrivyGate, cwd: string, remainingMs?: number): Gat
   return { ...base, ok: true, reason: `trivy passed (${ran.join(", ")}) on ${target}` };
 }
 
+/** Every diff gate fails closed without a base: nothing to compare against is never a pass. */
+const NO_BASE_REASON = "no git base ref to diff against — pass --base <ref> or run in a repo with an upstream (fail-closed)";
+
+/** The first `n` items as a comma list, with an ellipsis when more were left out. */
+function sample<T>(items: T[], n: number, show: (item: T) => string = String): string {
+  return `${items.slice(0, n).map(show).join(", ")}${items.length > n ? " …" : ""}`;
+}
+
 function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
   const base = { id: gate.id, type: gate.type };
+  if (DIFF_GATE_TYPES.has(gate.type) && !opts.baseRef) return { ...base, ok: false, reason: NO_BASE_REASON };
+  // Set for every diff gate (checked above).
+  const diffBase = opts.baseRef as string;
   try {
     switch (gate.type) {
       case "file-exists": {
@@ -347,7 +357,7 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
       }
       case "absent": {
         const re = new RegExp(gate.pattern, (gate.flags ?? "").replace(/[gy]/g, ""));
-        const files = globSync(gate.glob, { cwd, dot: true, ignore: [...IGNORE, ...(gate.ignore ?? [])] });
+        const files = scanFiles(cwd, gate.glob, gate.ignore);
         if (files.length === 0 && !gate.allowEmpty && !opts.allowEmptyGlobs) return { ...base, ok: false, reason: noOpReason(gate.glob) };
         const scan = new Scanner(gate.maxBytes, opts.remainingMs);
         for (const f of files) {
@@ -438,17 +448,12 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
       }
       case "no-new":
       case "no-fewer": {
-        if (!opts.baseRef) {
-          return { ...base, ok: false, reason: `no git base ref to diff against — pass --base <ref> or run in a repo with an upstream (fail-closed)` };
-        }
         // Fresh regex per line (drop g/y so lastIndex can't advance between .test calls).
         const flags = (gate.flags ?? "").replace(/[gy]/g, "");
         const re = () => new RegExp(gate.pattern, flags);
         const ignore = gate.ignore ?? [];
-        const workFiles = globSync(gate.glob, { cwd, dot: true, ignore: [...IGNORE, ...ignore] });
-        const baseFiles = listFilesAtRef(cwd, opts.baseRef, true).filter(
-          (p) => matchesGlob(p, gate.glob, ignore) && !IGNORE.some((ig) => matchesGlob(p, ig)),
-        );
+        const workFiles = scanFiles(cwd, gate.glob, ignore);
+        const baseFiles = listFilesAtRef(cwd, diffBase, true).filter((p) => inScan(p, gate.glob, ignore));
         const union = [...new Set<string>([...workFiles, ...baseFiles])];
         if (union.length === 0 && !gate.allowEmpty && !opts.allowEmptyGlobs) return { ...base, ok: false, reason: noOpReason(gate.glob) };
         const scan = new Scanner(gate.maxBytes, opts.remainingMs);
@@ -457,7 +462,7 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
         let firstNew: { file: string; line: number } | undefined;
         let firstLost: string | undefined;
         for (const f of union) {
-          const baseText = scan.atRef(cwd, opts.baseRef, f, union.length);
+          const baseText = scan.atRef(cwd, diffBase, f, union.length);
           const fileBase = baseText == null ? 0 : countMatchingLines(baseText, re());
           const text = scan.file(cwd, f, union.length);
           // A file gone from the working tree contributes 0; no-deleted covers the file itself.
@@ -468,7 +473,7 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
           baseCount += fileBase;
           workCount += fileWork;
         }
-        const short = baseLabel(opts.baseRef);
+        const short = baseLabel(diffBase);
         if (gate.type === "no-fewer") {
           return workCount < baseCount
             ? {
@@ -489,22 +494,19 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
           : { ...base, ok: true, reason: `no new /${gate.pattern}/ vs ${short} (${workCount} ≤ ${baseCount})` };
       }
       case "no-deleted": {
-        if (!opts.baseRef) {
-          return { ...base, ok: false, reason: `no git base ref to diff against — pass --base <ref> or run in a repo with an upstream (fail-closed)` };
-        }
         const ignore = gate.ignore ?? [];
-        const baseFiles = listFilesAtRef(cwd, opts.baseRef, true).filter((p) => matchesGlob(p, gate.glob, ignore));
+        const baseFiles = listFilesAtRef(cwd, diffBase, true).filter((p) => matchesGlob(p, gate.glob, ignore));
         if (baseFiles.length === 0 && !gate.allowEmpty && !opts.allowEmptyGlobs) {
-          const workFiles = globSync(gate.glob, { cwd, dot: true, ignore: [...IGNORE, ...ignore] });
+          const workFiles = scanFiles(cwd, gate.glob, ignore);
           if (workFiles.length === 0) return { ...base, ok: false, reason: noOpReason(gate.glob) };
         }
         const missing = baseFiles.filter((f) => !fs.existsSync(path.resolve(cwd, f)));
-        const short = baseLabel(opts.baseRef);
+        const short = baseLabel(diffBase);
         return missing.length
           ? {
               ...base,
               ok: false,
-              reason: `${missing.length} file(s) matching ${gate.glob} deleted since ${short}: ${missing.slice(0, 3).join(", ")}${missing.length > 3 ? " …" : ""}`,
+              reason: `${missing.length} file(s) matching ${gate.glob} deleted since ${short}: ${sample(missing, 3)}`,
               location: { file: missing[0] },
             }
           : { ...base, ok: true, reason: `no ${gate.glob} files deleted vs ${short} (${baseFiles.length} present)` };
@@ -539,7 +541,7 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
             return {
               ...base,
               ok: false,
-              reason: `${m}: ${report.missing.length} declared ${report.missing.length === 1 ? "dependency is" : "dependencies are"} not in ${lock}: ${report.missing.slice(0, 5).join(", ")}${report.missing.length > 5 ? " …" : ""} — install it or remove it`,
+              reason: `${m}: ${report.missing.length} declared ${report.missing.length === 1 ? "dependency is" : "dependencies are"} not in ${lock}: ${sample(report.missing, 5)} — install it or remove it`,
               location: { file: m },
             };
           }
@@ -554,23 +556,19 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
           return { ...base, ok: true, reason: `${res.checked} path references in ${res.files.length} instruction files resolve` };
         }
         const first = res.missing[0];
-        const sample = res.missing.slice(0, 3).map((m) => `${m.file}:${m.line} → ${m.ref}`).join(", ");
         return {
           ...base,
           ok: false,
-          reason: `${res.missing.length} stale reference${res.missing.length === 1 ? "" : "s"} in instruction files: ${sample}${res.missing.length > 3 ? " …" : ""} — fix the path or add it to ignore`,
+          reason: `${res.missing.length} stale reference${res.missing.length === 1 ? "" : "s"} in instruction files: ${sample(res.missing, 3, (m) => `${m.file}:${m.line} → ${m.ref}`)} — fix the path or add it to ignore`,
           location: { file: first.file, line: first.line },
         };
       }
       case "unchanged": {
-        if (!opts.baseRef) {
-          return { ...base, ok: false, reason: `no git base ref to diff against — pass --base <ref> or run in a repo with an upstream (fail-closed)` };
-        }
         const ignore = gate.ignore ?? [];
-        const baseline = [...blobsAtRef(cwd, opts.baseRef)].filter(([p]) => matchesGlob(p, gate.glob, ignore) && !IGNORE.some((ig) => matchesGlob(p, ig)));
-        const short = baseLabel(opts.baseRef);
+        const baseline = [...blobsAtRef(cwd, diffBase)].filter(([p]) => inScan(p, gate.glob, ignore));
+        const short = baseLabel(diffBase);
         if (baseline.length === 0 && !gate.allowEmpty && !opts.allowEmptyGlobs) {
-          const workFiles = globSync(gate.glob, { cwd, dot: true, ignore: [...IGNORE, ...ignore] });
+          const workFiles = scanFiles(cwd, gate.glob, ignore);
           if (workFiles.length === 0) return { ...base, ok: false, reason: noOpReason(gate.glob) };
           return { ...base, ok: true, reason: `no ${gate.glob} files at ${short} to protect (${workFiles.length} new)` };
         }
@@ -603,14 +601,14 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
           ? {
               ...base,
               ok: false,
-              reason: `${touched.length} protected file(s) matching ${gate.glob} changed since ${short}: ${touched.slice(0, 3).map((p) => `${p}${deletedLabel(p)}`).join(", ")}${touched.length > 3 ? " …" : ""} — restore them; change them only in a separate, reviewed commit`,
+              reason: `${touched.length} protected file(s) matching ${gate.glob} changed since ${short}: ${sample(touched, 3, (p) => `${p}${deletedLabel(p)}`)} — restore them; change them only in a separate, reviewed commit`,
               location: { file: touched[0] },
             }
           : { ...base, ok: true, reason: `${baseline.length} ${gate.glob} file(s) unchanged vs ${short}` };
       }
       case "deps-declared": {
         const ignore = gate.ignore ?? [];
-        const files = globSync(gate.glob, { cwd, dot: true, ignore: [...IGNORE, ...ignore] }).sort();
+        const files = scanFiles(cwd, gate.glob, ignore).sort();
         if (files.length === 0 && !gate.allowEmpty && !opts.allowEmptyGlobs) return { ...base, ok: false, reason: noOpReason(gate.glob) };
         const scan = new Scanner(gate.maxBytes, opts.remainingMs);
         const manifests = new Map<string, ReturnType<typeof nearestManifest>>();
@@ -633,21 +631,17 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
         }
         if (missing.size === 0) return { ...base, ok: true, reason: `${imports} package imports declared (${files.length} files)` };
         const entries = [...missing].map(([key, at]) => ({ manifest: key.split("\0")[0], pkg: key.split("\0")[1], ...at }));
-        const sample = entries.slice(0, 5).map((e) => `${e.pkg} (${e.file}:${e.line})`).join(", ");
         return {
           ...base,
           ok: false,
-          reason: `${entries.length} imported package${entries.length === 1 ? " is" : "s are"} not declared in ${entries[0].manifest}: ${sample}${entries.length > 5 ? " …" : ""} — add it to the manifest or remove the import`,
+          reason: `${entries.length} imported package${entries.length === 1 ? " is" : "s are"} not declared in ${entries[0].manifest}: ${sample(entries, 5, (e) => `${e.pkg} (${e.file}:${e.line})`)} — add it to the manifest or remove the import`,
           location: { file: entries[0].file, line: entries[0].line },
         };
       }
       case "signed-commits": {
-        if (!opts.baseRef) {
-          return { ...base, ok: false, reason: `no git base ref to diff against — pass --base <ref> or run in a repo with an upstream (fail-closed)` };
-        }
         const accepted = gate.trust === "verified" ? ["G", "U"] : ["G", "U", "X", "Y", "E"];
-        const commits = commitSignatures(cwd, opts.baseRef);
-        const short = baseLabel(opts.baseRef);
+        const commits = commitSignatures(cwd, diffBase);
+        const short = baseLabel(diffBase);
         if (commits.length === 0) return { ...base, ok: true, reason: `no commits since ${short}` };
         const bad = commits.filter((commit) => !accepted.includes(commit.status));
         const label = (status: string) => ({ N: "unsigned", B: "bad signature", R: "revoked key", E: "cannot be verified", X: "expired signature", Y: "expired key" } as Record<string, string>)[status] ?? `status ${status}`;
@@ -655,7 +649,7 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
           ? {
               ...base,
               ok: false,
-              reason: `${bad.length} of ${commits.length} commit(s) since ${short} not ${gate.trust === "verified" ? "verified" : "signed"}: ${bad.slice(0, 3).map((c) => `${c.sha.slice(0, 12)} ${label(c.status)} "${c.subject}"`).join(", ")}${bad.length > 3 ? " …" : ""}`,
+              reason: `${bad.length} of ${commits.length} commit(s) since ${short} not ${gate.trust === "verified" ? "verified" : "signed"}: ${sample(bad, 3, (c) => `${c.sha.slice(0, 12)} ${label(c.status)} "${c.subject}"`)}`,
             }
           : { ...base, ok: true, reason: `${commits.length} commit(s) since ${short} ${gate.trust === "verified" ? "verified" : "signed"}` };
       }

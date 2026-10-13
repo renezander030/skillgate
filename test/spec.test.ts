@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { findSpecPath, loadSpec, parseSpec, specRoot, SPEC_VERSION } from "../src/spec.js";
+import { execFileSync } from "node:child_process";
+import { findSpecPath, loadSpec, parseSpec, specRoot, workspaceRoot, SPEC_VERSION } from "../src/spec.js";
 
 function tmpSpec(content: string, name = "done.yaml"): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "skillgate-spec-"));
@@ -91,4 +92,16 @@ test("findSpecPath walks to the active worktree root but never beyond a nested c
   fs.mkdirSync(path.join(root, "vendor", "child", ".git"), { recursive: true });
   fs.mkdirSync(child, { recursive: true });
   assert.equal(findSpecPath(child), null);
+});
+
+test("workspaceRoot: the policy's root, else the enclosing Git worktree, else cwd", (t) => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "skillgate-ws-")));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const nested = path.join(dir, "repo", "pkg");
+  fs.mkdirSync(nested, { recursive: true });
+  assert.equal(workspaceRoot(path.join(dir, "repo", ".skillgate", "done.yaml"), nested), path.join(dir, "repo"));
+  assert.equal(workspaceRoot(path.join(nested, "done.yaml"), dir), nested);
+  assert.equal(workspaceRoot(null, nested), nested);
+  execFileSync("git", ["init", "-q"], { cwd: path.join(dir, "repo") });
+  assert.equal(fs.realpathSync(workspaceRoot(undefined, nested)), path.join(dir, "repo"));
 });

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
+import { repoRoot } from "./git.js";
 
 /**
  * Conditions under which a gate applies. Every listed condition must hold; within
@@ -347,6 +348,11 @@ export const DEFAULT_SPEC_PATHS = [
 export function specRoot(specPath: string): string {
   const parent = path.dirname(specPath);
   return path.basename(parent) === ".skillgate" ? path.dirname(parent) : parent;
+}
+
+/** Workspace gates run in: the policy's root, else the enclosing Git worktree, else `cwd`. */
+export function workspaceRoot(specPath: string | null | undefined, cwd: string): string {
+  return specPath ? specRoot(specPath) : (repoRoot(cwd) ?? cwd);
 }
 
 /**

@@ -216,3 +216,19 @@ test("isFinishLine: structural match against patterns", () => {
   assert.equal(isFinishLine("ls -la", ["git commit"]), false);
   assert.equal(isFinishLine("anything", undefined), false);
 });
+
+test("every diff gate fails closed with the same reason when no base ref resolves", () => {
+  const gates = [
+    { id: "a", type: "no-new" as const, glob: "**/*", pattern: "x" },
+    { id: "b", type: "no-fewer" as const, glob: "**/*", pattern: "x" },
+    { id: "c", type: "no-deleted" as const, glob: "**/*" },
+    { id: "d", type: "unchanged" as const, glob: "**/*" },
+    { id: "e", type: "signed-commits" as const },
+  ];
+  const result = runGates({ gates }, process.cwd());
+  assert.equal(result.failed.length, 5);
+  for (const r of result.results) {
+    assert.equal(r.reason, "no git base ref to diff against — pass --base <ref> or run in a repo with an upstream (fail-closed)");
+    assert.equal(r.status, "fail");
+  }
+});
