@@ -4,16 +4,16 @@ import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { findSpecPath, loadSpec, parseSpec, specRoot, DEFAULT_SPEC_PATHS, DEFAULT_PHASE_FILE, DEFAULT_RUN_TIMEOUT_MS, type Spec, type PhaseGate } from "./spec.js";
+import { findSpecPath, loadSpec, parseSpec, specRoot, workspaceRoot, DEFAULT_SPEC_PATHS, DEFAULT_PHASE_FILE, DEFAULT_RUN_TIMEOUT_MS, type Spec, type PhaseGate } from "./spec.js";
 import { runGates, decideCommand, decideTool, currentPhase, evaluatePhase, gatesForCommand, type GateResult, type RunResult } from "./core.js";
 import { appendLog, logPath, logPathProblem, summarizeLog, toFailed, type LogRecord } from "./log.js";
 import { checkDrift, formatDiff, DEFAULT_THRESHOLD, discover, pickCanonical } from "./drift.js";
 import { runSync } from "./link.js";
-import { runScaffold, listTemplates } from "./scaffold.js";
+import { runScaffold, templateHelp } from "./scaffold.js";
 import { doctor, installIntegration, INTEGRATION_TARGETS, type IntegrationTarget } from "./integrations.js";
 import { analyzeCommand } from "./command.js";
 import { reviewSnapshot } from "./review.js";
-import { cacheDisabledReason, receiptPathIsInput, readCachedResult, snapshotKey, writeCachedResult, writeReceipt } from "./receipt.js";
+import { EVALUATOR_VERSION, cacheDisabledReason, receiptPathIsInput, readCachedResult, snapshotKey, writeCachedResult, writeReceipt } from "./receipt.js";
 import { resolveBaseRef, mergeBase, readFileAtRef, repoRelativePath, repoRoot, isClean } from "./git.js";
 import {
   createPrivatePassProof,
@@ -146,22 +146,14 @@ Experimental encrypted fleet totals:
   skillgate fhe-metrics help         show the private aggregation walkthrough
 
 Templates (scaffold --template):
-  generic    General-purpose evidence workflow
-  ts-lib     TypeScript library — typecheck, test, lint, coverage
-  react      React / Next.js application
-  python     Python application`);
-}
-
-function version(): void {
-  const pkg = JSON.parse(fs.readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
-  console.log(pkg.version);
+${templateHelp()}`);
 }
 
 const args = process.argv.slice(2);
 const cmd = args[0];
 
 if (cmd === "--version" || cmd === "-v") {
-  version();
+  console.log(EVALUATOR_VERSION);
   process.exit(0);
 }
 if (!cmd || cmd === "help" || cmd === "--help" || cmd === "-h") {
@@ -256,8 +248,10 @@ interface Resolved {
  * so the change under review cannot edit or delete the policy it is judged by —
  * and anything that prevents that (no base, no pinned spec) fails closed.
  */
-function resolveSpecAndBase(specPathHint: string | null): Resolved {
-  const workspace = specPathHint ? specRoot(specPathHint) : (repoRoot(cwd) ?? cwd);
+function resolveSpecAndBase(specPath: string | null): Resolved {
+  // A spec path that does not exist is no hint (with --pin it may be deleted in the change under review).
+  const specPathHint = specPath && fs.existsSync(specPath) ? specPath : null;
+  const workspace = workspaceRoot(specPathHint, cwd);
   const rawBase = resolveBaseRef(workspace, baseArg);
   if (!rawBase && (baseArg?.trim() || process.env.SKILLGATE_BASE?.trim())) {
     throw new Error("requested base ref cannot be resolved — refusing to use a different baseline");
@@ -316,14 +310,24 @@ function commandFromPayload(payload: { raw: string; data?: any }): string {
   return String(o?.tool_input?.command ?? o?.command ?? o?.params?.command ?? o?.tool_input?.cmd ?? payload.raw);
 }
 
+/** The first argument after the command, unless it is a flag. */
+function positional(): string | undefined {
+  return args[1] && !args[1].startsWith("-") ? args[1] : undefined;
+}
+
+/** `positional()` resolved against `--cwd`, or null without one. */
+function positionalPath(): string | null {
+  const arg = positional();
+  return arg ? path.resolve(cwd, arg) : null;
+}
+
 function option(name: string): string | undefined {
   const index = args.indexOf(name);
   return index >= 0 ? args[index + 1] : undefined;
 }
 
 function zkSpecPath(): string | null {
-  const explicit = args[1] && !args[1].startsWith("-") ? path.resolve(cwd, args[1]) : null;
-  return explicit ?? findSpecPath(cwd);
+  return positionalPath() ?? findSpecPath(cwd);
 }
 
 function resolvedZKSpec(): Resolved {
@@ -331,7 +335,7 @@ function resolvedZKSpec(): Resolved {
   if (!pin && (!specPath || !fs.existsSync(specPath))) {
     die(2, "no spec found — run `skillgate init` or pass a path immediately after the command");
   }
-  return resolveSpecAndBase(specPath && fs.existsSync(specPath) ? specPath : null);
+  return resolveSpecAndBase(specPath);
 }
 
 /** Append a verdict to the opt-in decision log; never changes the verdict. */
@@ -431,7 +435,7 @@ if (cmd === "zk-prove") {
 }
 
 if (cmd === "zk-verify") {
-  const proofArg = args[1] && !args[1].startsWith("-") ? args[1] : "";
+  const proofArg = positional() ?? "";
   const publicArg = option("--public-key");
   const expectedPolicy = option("--expect-policy") ?? "";
   const challenge = option("--challenge") ?? "";
@@ -591,7 +595,7 @@ if (cmd === "explain") {
 }
 
 if (cmd === "log") {
-  const file = args[1] && !args[1].startsWith("-") ? path.resolve(cwd, args[1]) : logPath(undefined, cwd);
+  const file = positionalPath() ?? logPath(undefined, cwd);
   if (!file) die(2, "usage: skillgate log <file> (or set SKILLGATE_LOG)");
   let text: string;
   try {
@@ -671,7 +675,7 @@ if (cmd === "audit") {
 }
 
 if (cmd === "check") {
-  const explicit = args[1] && !args[1].startsWith("-") ? path.resolve(cwd, args[1]) : null;
+  const explicit = positionalPath();
   const specPath = explicit ?? findSpecPath(cwd);
   // Without --pin the working-tree spec must exist; with --pin it may have been
   // deleted in the change under review — resolveSpecAndBase reads it from the base.
@@ -690,7 +694,7 @@ if (cmd === "check") {
   let snapshot: string | undefined;
   let workspace = cwd;
   try {
-    const r = resolveSpecAndBase(specPath && fs.existsSync(specPath) ? specPath : null);
+    const r = resolveSpecAndBase(specPath);
     pinnedTo = r.pinnedTo;
     workspace = r.workspace;
     const timeoutArg = option("--timeout");
@@ -877,12 +881,12 @@ if (cmd === "verify-patch" || cmd === "verify-apply") {
 if (cmd === "phase") {
   // Stateless phases: the marker only names where the agent is. Moving to a phase
   // (and every gated action while in it) re-checks that phase's requirements live.
-  const target = args[1] && !args[1].startsWith("-") ? args[1] : undefined;
+  const target = positional();
   const specPath = findSpecPath(cwd);
   if (!pin && !specPath) die(2, "no spec found — run `skillgate init`");
   let r: Resolved;
   try {
-    r = resolveSpecAndBase(specPath && fs.existsSync(specPath) ? specPath : null);
+    r = resolveSpecAndBase(specPath);
   } catch (e: any) {
     die(2, e.message);
   }
@@ -950,7 +954,7 @@ if (cmd === "gate") {
     : option("--tool") ?? (payloadTool && !SHELL_TOOLS.has(payloadTool) ? payloadTool : undefined);
   const command = event === "stop" ? "" : tool ?? ((option("--command") ?? commandFromPayload(payload)) ?? "").trim();
   const specPath = findSpecPath(cwd);
-  let logWorkspace = specPath ? specRoot(specPath) : (repoRoot(cwd) ?? cwd);
+  let logWorkspace = workspaceRoot(specPath, cwd);
   const started = Date.now();
 
   /** Answer in the host's protocol and exit. */
@@ -993,7 +997,7 @@ if (cmd === "gate") {
   if (!pin && !specPath) answer("allow", "no skillgate spec — nothing to enforce");
 
   try {
-    const r = resolveSpecAndBase(specPath && fs.existsSync(specPath) ? specPath : null);
+    const r = resolveSpecAndBase(specPath);
     logWorkspace = r.workspace;
     const timeoutArg = option("--timeout");
     const timeoutMs = timeoutArg == null ? undefined : Number(timeoutArg);

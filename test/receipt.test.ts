@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import type { RunResult } from "../src/core.js";
 import { readCachedResult, snapshotKey, writeCachedResult, writeReceipt } from "../src/receipt.js";
 
@@ -38,4 +39,26 @@ test("writeReceipt produces an auditable machine-readable result", (t) => {
 
   writeReceipt(file, "replacement", pass, "executed");
   assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).snapshot, "replacement");
+});
+
+test("snapshotKey binds git-ignored dependency lockfiles and the phase marker the gates read", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "skillgate-receipt-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  execFileSync("git", ["init", "-q"], { cwd: dir });
+  fs.writeFileSync(path.join(dir, ".gitignore"), "*.lock\npnpm-lock.yaml\n.skillgate/\n");
+  fs.writeFileSync(path.join(dir, "pyproject.toml"), "[project]\nname = \"x\"\ndependencies = []\n");
+  const gated = {
+    gates: [
+      { id: "locked", type: "deps-locked" as const },
+      { id: "flow", type: "phase" as const, phases: [{ id: "build" }] },
+    ],
+  };
+  const keys = new Set([snapshotKey(gated, dir)]);
+  for (const [file, text] of [["uv.lock", "a"], ["poetry.lock", "b"], ["pnpm-lock.yaml", "c"], ["bun.lock", "d"], [".skillgate/phase", "ship\n"]]) {
+    fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    fs.writeFileSync(path.join(dir, file), text);
+    const key = snapshotKey(gated, dir);
+    assert.ok(!keys.has(key), `${file} must change the snapshot`);
+    keys.add(key);
+  }
 });

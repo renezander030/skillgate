@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { findSpecPath, loadSpec, specRoot } from "./spec.js";
-import { repoRoot } from "./git.js";
+import { findSpecPath, loadSpec, specRoot, workspaceRoot } from "./spec.js";
 import { writeTextAtomic, withInstallLock } from "./files.js";
+import { EVALUATOR_VERSION } from "./receipt.js";
 
 export const INTEGRATION_TARGETS = ["claude-code", "codex", "gemini-cli", "cursor", "opencode", "github-actions", "pre-commit"] as const;
 export type IntegrationTarget = (typeof INTEGRATION_TARGETS)[number];
@@ -39,13 +39,7 @@ function writeJson(file: string, value: unknown): void {
 }
 
 function packageRef(): string {
-  const pkg = JSON.parse(fs.readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
-  return `@reneza/skillgate@${pkg.version}`;
-}
-
-function projectRoot(cwd: string): string {
-  const spec = findSpecPath(cwd);
-  return spec ? specRoot(spec) : (repoRoot(cwd) ?? cwd);
+  return `@reneza/skillgate@${EVALUATOR_VERSION}`;
 }
 
 function readJson(file: string): any {
@@ -237,7 +231,7 @@ function installPreCommit(cwd: string): InstallResult {
 }
 
 export function installIntegration(target: IntegrationTarget, cwd: string, opts: InstallOptions = {}): InstallResult {
-  const root = projectRoot(cwd);
+  const root = workspaceRoot(findSpecPath(cwd), cwd);
   return withInstallLock(root, () => {
     switch (target) {
     case "claude-code": return installClaude(root, opts);
@@ -265,7 +259,7 @@ function uncovered(target: IntegrationTarget, file: string, root: string): strin
 export function doctor(cwd: string, targets: readonly IntegrationTarget[] = INTEGRATION_TARGETS): DoctorCheck[] {
   const checks: DoctorCheck[] = [];
   const spec = findSpecPath(cwd);
-  const root = spec ? specRoot(spec) : (repoRoot(cwd) ?? cwd);
+  const root = workspaceRoot(spec, cwd);
   if (!spec) {
     checks.push({ id: "policy", ok: false, detail: "no Skillgate policy found" });
   } else {

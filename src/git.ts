@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import picomatch from "picomatch";
+import { globSync } from "tinyglobby";
 
 /**
  * Git plumbing for base-pinned and diff-aware gates. Every call is read-only and
@@ -153,6 +154,19 @@ export function globToRegExp(glob: string): RegExp {
 export function matchesGlob(p: string, glob: string, ignore: string[] = []): boolean {
   if (!globToRegExp(glob).test(p)) return false;
   return !ignore.some((ig) => globToRegExp(ig).test(p));
+}
+
+/** Paths no glob gate ever scans, whatever its own `ignore` says. */
+const SCAN_IGNORE = ["**/node_modules/**", "**/.git/**", "dist/**"];
+
+/** Working-tree files a glob gate scans: dotfiles included, built-in and gate ignores excluded. */
+export function scanFiles(cwd: string, glob: string, ignore: string[] = []): string[] {
+  return globSync(glob, { cwd, dot: true, ignore: [...SCAN_IGNORE, ...ignore] });
+}
+
+/** True when repo path `p` is one `scanFiles` would return for this glob (used for baseline trees). */
+export function inScan(p: string, glob: string, ignore: string[] = []): boolean {
+  return matchesGlob(p, glob, [...SCAN_IGNORE, ...ignore]);
 }
 
 /**

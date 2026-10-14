@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { runScaffold } from "../src/scaffold.js";
+import { runScaffold, templateHelp } from "../src/scaffold.js";
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "skillgate-scaffold-"));
@@ -131,4 +131,14 @@ test("scaffold: warns when done.yaml lacks evidence gates", () => {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+test("templateHelp lists every scaffold template runScaffold accepts", (t) => {
+  const names = templateHelp().split("\n").map((line) => line.trim().split(/\s+/)[0]);
+  assert.deepEqual(names, ["generic", "ts-lib", "react", "python"]);
+  for (const template of names) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "skillgate-tpl-"));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    assert.doesNotThrow(() => runScaffold({ cwd: dir, template }));
+  }
+  assert.throws(() => runScaffold({ cwd: os.tmpdir(), template: "nope" }), /Available: generic, python, react, ts-lib/);
 });

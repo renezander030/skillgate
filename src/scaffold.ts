@@ -277,12 +277,7 @@ export function runScaffold(opts: ScaffoldOptions): ScaffoldResult {
   return { lines, created };
 }
 
-/** List available scaffold templates (for CLI help). */
-export function listTemplates(): string[] {
-  return Object.keys(TEMPLATES).sort();
-}
-
-/** Get template description. */
-export function describeTemplate(name: string): string | undefined {
-  return TEMPLATES[name]?.description;
+/** The CLI help's template lines, one per template in declaration order. */
+export function templateHelp(): string {
+  return Object.entries(TEMPLATES).map(([name, template]) => `  ${name.padEnd(11)}${template.description}`).join("\n");
 }
