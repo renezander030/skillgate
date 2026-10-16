@@ -25,6 +25,8 @@ export interface BaseGate {
   id: string;
   description?: string;
   when?: GateWhen;
+  /** `warn` reports a failure without failing the run or blocking. Default `block`. */
+  level?: "block" | "warn";
 }
 
 /** One step of a `phase` gate. */
@@ -140,6 +142,9 @@ export interface TrivyGate extends BaseGate {
 export interface EvidenceGate extends BaseGate {
   type: "evidence";
   file: string;
+  /** Files the evidence must be newer than: written after the last change to any of them. */
+  newerThan?: string;
+  ignore?: string[];
 }
 
 /**
@@ -260,6 +265,22 @@ export interface SignedCommitsGate extends BaseGate {
   trust?: "signed" | "verified";
 }
 
+/** Every non-merge commit between the base and HEAD must have a subject matching `pattern`. */
+export interface CommitMessagesGate extends BaseGate {
+  type: "commit-messages";
+  pattern: string;
+  flags?: string;
+}
+
+/**
+ * Every local commit must be on the remote: HEAD is contained in `ref` (default:
+ * the branch's upstream). Reads the local remote-tracking ref, so fetch first in CI.
+ */
+export interface PushedGate extends BaseGate {
+  type: "pushed";
+  ref?: string;
+}
+
 /**
  * Every dependency declared in a manifest must be present in its lockfile. A
  * package an agent invented (or never installed) cannot have resolved into the
@@ -292,10 +313,12 @@ export type Gate =
   | InstructionRefsGate
   | UnchangedGate
   | SignedCommitsGate
+  | CommitMessagesGate
+  | PushedGate
   | PhaseGate;
 
 /** Gate types that compare the working tree to a git base ref. */
-export const DIFF_GATE_TYPES = new Set(["no-new", "no-deleted", "no-fewer", "unchanged", "signed-commits"]);
+export const DIFF_GATE_TYPES = new Set(["no-new", "no-deleted", "no-fewer", "unchanged", "signed-commits", "commit-messages"]);
 
 export interface Spec {
   /**
@@ -450,7 +473,8 @@ function validateGate(value: unknown, index: number): void {
   nonEmptyString(gate.type, `${where}.type`);
   optionalString(gate.description, `${where}.description`);
   validateWhen(gate.when, `${where}.when`);
-  const base = ["id", "type", "description", "when"];
+  if (gate.level != null && gate.level !== "block" && gate.level !== "warn") throw new Error(`${where}.level must be block or warn`);
+  const base = ["id", "type", "description", "when", "level"];
   const allow = (...fields: string[]) => noUnknown(gate, [...base, ...fields], where);
   const timeout = () => { if (gate.timeout != null) positiveInteger(gate.timeout, `${where}.timeout`); };
   const maxBytes = () => { if (gate.maxBytes != null) positiveInteger(gate.maxBytes, `${where}.maxBytes`); };
@@ -516,8 +540,10 @@ function validateGate(value: unknown, index: number): void {
       nonEmptyString(gate.file, `${where}.file`);
       break;
     case "evidence":
-      allow("file");
+      allow("file", "newerThan", "ignore");
       nonEmptyString(gate.file, `${where}.file`);
+      if (gate.newerThan != null) nonEmptyString(gate.newerThan, `${where}.newerThan`);
+      if (gate.ignore != null) stringArray(gate.ignore, `${where}.ignore`);
       break;
     case "instruction-sync":
       allow("threshold", "require");
@@ -551,6 +577,14 @@ function validateGate(value: unknown, index: number): void {
     case "signed-commits":
       allow("trust");
       if (gate.trust != null && gate.trust !== "signed" && gate.trust !== "verified") throw new Error(`${where}.trust must be signed or verified`);
+      break;
+    case "commit-messages":
+      allow("pattern", "flags");
+      validateRegex(gate.pattern, gate.flags, where);
+      break;
+    case "pushed":
+      allow("ref");
+      if (gate.ref != null) nonEmptyString(gate.ref, `${where}.ref`);
       break;
     case "not-empty":
       allow("path", "min");

@@ -19,7 +19,7 @@ import {
   DIFF_GATE_TYPES,
 } from "./spec.js";
 import { checkDrift, DEFAULT_THRESHOLD, TOOL_SPECS } from "./drift.js";
-import { readFileAtRef, listFilesAtRef, matchesGlob, scanFiles, inScan, changedFiles, currentBranch, baseLabel, repoRelativePath, blobsAtRef, hashBlob, hashWorkingFiles, commitSignatures } from "./git.js";
+import { readFileAtRef, listFilesAtRef, matchesGlob, scanFiles, inScan, changedFiles, currentBranch, baseLabel, repoRelativePath, blobsAtRef, hashBlob, hashWorkingFiles, commitSignatures, commitSubjects, unpushedCommits } from "./git.js";
 import { findImports, packageName, nearestManifest, isDeclared } from "./imports.js";
 import { checkInstructionRefs } from "./refs.js";
 import { checkManifest, SUPPORTED_MANIFESTS } from "./deps.js";
@@ -34,7 +34,7 @@ export interface GateResult {
   ok: boolean;
   reason: string;
   /** Explicit execution state; `not-run` is always blocking, `skipped` never is. */
-  status?: "pass" | "fail" | "not-run" | "skipped";
+  status?: "pass" | "fail" | "not-run" | "skipped" | "warn";
   durationMs?: number;
   /** Workspace-relative file (and 1-based line) a failure points at, when known. */
   location?: { file: string; line?: number };
@@ -122,6 +122,12 @@ function runOne(gate: Gate, cwd: string, opts: RunOptions): GateResult {
     ? { id: gate.id, type: gate.type, ok: false, status: "not-run", reason: "not run: overall timeout exhausted", durationMs: 0 }
     : checkGate(gate, cwd, { ...opts, remainingMs });
   result.status ??= result.ok ? "pass" : "fail";
+  // A warn-level gate reports its failure but never fails the run.
+  if (gate.level === "warn" && (result.status === "fail" || result.status === "not-run")) {
+    result.ok = true;
+    result.status = "warn";
+    result.reason = `warning: ${result.reason}`;
+  }
   result.durationMs ??= Date.now() - started;
   opts.memo?.set(gate.id, result);
   return result;
@@ -405,6 +411,22 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
         if (!stat.isFile()) return { ...base, ok: false, reason: `evidence is not a regular file: ${gate.file}`, location: { file: gate.file } };
         if (stat.size === 0) return { ...base, ok: false, reason: `evidence empty: ${gate.file}`, location: { file: gate.file } };
         fs.accessSync(full, fs.constants.R_OK);
+        if (gate.newerThan) {
+          const newer = scanFiles(cwd, gate.newerThan, gate.ignore)
+            .filter((file) => path.resolve(cwd, file) !== full)
+            .map((file) => ({ file, mtimeMs: fs.statSync(path.resolve(cwd, file)).mtimeMs }))
+            .filter((entry) => entry.mtimeMs > stat.mtimeMs)
+            .sort((a, b) => b.mtimeMs - a.mtimeMs);
+          if (newer.length) {
+            return {
+              ...base,
+              ok: false,
+              reason: `evidence is stale: ${newer.length} file(s) matching ${gate.newerThan} changed after ${gate.file} was written: ${sample(newer, 3, (n) => n.file)} — rerun and rewrite the evidence`,
+              location: { file: gate.file },
+            };
+          }
+          return { ...base, ok: true, reason: `evidence present and newer than ${gate.newerThan}: ${gate.file}` };
+        }
         return { ...base, ok: true, reason: `evidence present: ${gate.file}` };
       }
       case "instruction-sync": {
@@ -652,6 +674,22 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
               reason: `${bad.length} of ${commits.length} commit(s) since ${short} not ${gate.trust === "verified" ? "verified" : "signed"}: ${sample(bad, 3, (c) => `${c.sha.slice(0, 12)} ${label(c.status)} "${c.subject}"`)}`,
             }
           : { ...base, ok: true, reason: `${commits.length} commit(s) since ${short} ${gate.trust === "verified" ? "verified" : "signed"}` };
+      }
+      case "commit-messages": {
+        const re = new RegExp(gate.pattern, gate.flags ?? "");
+        const commits = commitSubjects(cwd, diffBase);
+        const short = baseLabel(diffBase);
+        if (commits.length === 0) return { ...base, ok: true, reason: `no commits since ${short}` };
+        const bad = commits.filter((commit) => !re.test(commit.subject));
+        return bad.length
+          ? { ...base, ok: false, reason: `${bad.length} of ${commits.length} commit message(s) since ${short} do not match /${gate.pattern}/: ${sample(bad, 3, (c) => `${c.sha.slice(0, 12)} "${c.subject}"`)}` }
+          : { ...base, ok: true, reason: `${commits.length} commit message(s) since ${short} match` };
+      }
+      case "pushed": {
+        const { ref, commits } = unpushedCommits(cwd, gate.ref);
+        return commits.length
+          ? { ...base, ok: false, reason: `${commits.length} commit(s) not on ${ref}: ${sample(commits, 3, (c) => `${c.sha.slice(0, 12)} "${c.subject}"`)} — push them` }
+          : { ...base, ok: true, reason: `every commit is on ${ref}` };
       }
       default:
         return { ...base, ok: false, reason: `unknown gate type` };

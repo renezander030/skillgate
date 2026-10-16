@@ -270,6 +270,44 @@ export interface CommitSignature {
 }
 
 /** Signature status of every commit reachable from HEAD but not from `ref`. Strict. */
+/** Subjects of the non-merge commits between `ref` and HEAD, newest first. */
+export function commitSubjects(cwd: string, ref: string): { sha: string; subject: string }[] {
+  const range = ref === EMPTY_TREE ? ["HEAD"] : [`${ref}..HEAD`];
+  let out: string;
+  try {
+    out = execFileSync("git", ["log", "-z", "--no-merges", "--format=%H%x1f%s", ...range, "--"], { cwd, ...GIT_OPTS });
+  } catch (error: any) {
+    if (ref === EMPTY_TREE && /does not have any commits|unknown revision|bad default revision/.test(String(error?.stderr ?? ""))) return [];
+    throw new Error(`cannot read commits since ${baseLabel(ref)}`);
+  }
+  return out.split("\0").filter(Boolean).map((record) => {
+    const [sha, subject] = record.replace(/^\n/, "").split("\x1f");
+    return { sha, subject: subject ?? "" };
+  });
+}
+
+/**
+ * Commits on HEAD that `ref` (default: the branch's upstream) does not contain.
+ * Throws when the ref cannot be resolved, so a missing upstream fails closed.
+ */
+export function unpushedCommits(cwd: string, ref?: string): { ref: string; commits: { sha: string; subject: string }[] } {
+  const target = ref ?? "@{upstream}";
+  let resolved: string;
+  try {
+    resolved = execFileSync("git", ["rev-parse", "--verify", "--quiet", "--symbolic-full-name", target], { cwd, ...GIT_OPTS }).trim()
+      || execFileSync("git", ["rev-parse", "--verify", "--quiet", `${target}^{commit}`], { cwd, ...GIT_OPTS }).trim();
+  } catch {
+    throw new Error(ref ? `cannot resolve ${ref}` : "the current branch has no upstream — push with -u or set ref");
+  }
+  const name = resolved.replace(/^refs\/remotes\//, "").replace(/^refs\/heads\//, "");
+  const out = execFileSync("git", ["log", "-z", "--format=%H%x1f%s", `${target}..HEAD`, "--"], { cwd, ...GIT_OPTS });
+  const commits = out.split("\0").filter(Boolean).map((record) => {
+    const [sha, subject] = record.replace(/^\n/, "").split("\x1f");
+    return { sha, subject: subject ?? "" };
+  });
+  return { ref: name, commits };
+}
+
 export function commitSignatures(cwd: string, ref: string): CommitSignature[] {
   const range = ref === EMPTY_TREE ? ["HEAD"] : [`${ref}..HEAD`];
   let out: string;

@@ -28,6 +28,7 @@ import {
 const C = {
   reset: "\x1b[0m",
   red: "\x1b[31m",
+  yellow: "\x1b[33m",
   green: "\x1b[32m",
   dim: "\x1b[2m",
   bold: "\x1b[1m",
@@ -370,7 +371,7 @@ function recordDecision(workspace: string, record: Omit<LogRecord, "ts" | "works
 
 function printResults(results: GateResult[]): void {
   for (const r of results) {
-    const mark = r.status === "skipped" ? c(C.dim, "−") : r.ok ? c(C.green, "✓") : c(C.red, "✗");
+    const mark = r.status === "skipped" ? c(C.dim, "−") : r.status === "warn" ? c(C.yellow, "!") : r.ok ? c(C.green, "✓") : c(C.red, "✗");
     console.log(`  ${mark} ${r.id}  ${c(C.dim, r.reason)}`);
   }
 }
@@ -758,7 +759,8 @@ if (cmd === "check") {
   if (format === "github") for (const line of githubAnnotations(result, workspace)) console.log(line);
   if (result.passed) {
     const skipped = result.results.length - applied(result);
-    console.log(c(C.green, `✓ all ${applied(result)} gates passed`) + (skipped ? c(C.dim, ` (${skipped} skipped by when)`) : ""));
+    const warned = result.results.filter((r) => r.status === "warn").length;
+    console.log(c(C.green, `✓ all ${applied(result)} gates passed`) + (skipped ? c(C.dim, ` (${skipped} skipped by when)`) : "") + (warned ? c(C.yellow, ` (${warned} warning${warned === 1 ? "" : "s"})`) : ""));
     process.exit(0);
   }
   console.log(

@@ -156,7 +156,7 @@ function parseReceipt(file: string, spec?: Spec): StoredReceipt | null {
     const ids = new Set<string>();
     for (const gate of result.results) {
       if (!gate || typeof gate.id !== "string" || ids.has(gate.id) || typeof gate.type !== "string"
-        || gate.ok !== true || typeof gate.reason !== "string" || ![undefined, "pass", "skipped"].includes(gate.status)) return null;
+        || gate.ok !== true || typeof gate.reason !== "string" || ![undefined, "pass", "skipped", "warn"].includes(gate.status)) return null;
       ids.add(gate.id);
     }
     if (spec && (result.results.length !== spec.gates.length || spec.gates.some((gate, i) =>
