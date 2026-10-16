@@ -20,8 +20,12 @@ A spec is a YAML (or JSON) file. skillgate looks for it at, in order:
 tokenized, common wrappers and executable suffixes are normalized, and the command
 prefix is compared with the configured pattern. This catches `env CI=1 git push`,
 `git -C repo commit`, nested `sh -c`/PowerShell commands, and Windows `.cmd`
-launchers without matching quoted prose. Run `skillgate explain --command "..."`
-to inspect the decision without executing gates.
+launchers without matching quoted prose. Process wrappers (`timeout`, `nice`,
+`ionice`, `stdbuf`, `xargs`, `watch`, `doas`) and `find -exec`/`-execdir` are
+unwrapped too. A program or subcommand the shell only decides at run time fails
+closed: `git $(echo push)` and `git "$SUB"` match every `git` pattern, and
+`g=git; $g push` or `"$(which git)" push` resolve to `git push`. Run
+`skillgate explain --command "..."` to inspect the decision without executing gates.
 
 Runtime loading enforces the same closed shape as the JSON Schema: unknown fields,
 unsupported gate types, duplicate IDs, invalid regexes, invalid option values, and
@@ -153,6 +157,18 @@ regular file. Directories and unreadable paths fail the check.
   file: .skillgate/evidence/research.md
 ```
 
+Set `newerThan` to a glob when the evidence has to describe the current code: the
+file must have been written after the last change to every matching file (by
+modification time), so a test log saved before the final edit fails as stale.
+`ignore` excludes files from `newerThan`.
+
+```yaml
+- id: tests-ran
+  type: evidence
+  file: .skillgate/evidence/test-output.txt
+  newerThan: "src/**"
+```
+
 ### `not-empty`
 
 A directory must contain at least `min` entries (files or subdirectories). Catches
@@ -207,6 +223,11 @@ judged. A slashed code span counts as a path only when it has a file extension,
 ends with `/`, or its first segment exists, so `origin/main` and `owner/repo` are
 left alone. References resolve against the instruction file's directory or the
 repository root. Failures point at `file:line`.
+
+Script runs are checked too: `npm run <name>`, `pnpm run`, `yarn run`, `bun run`
+and `npm run-script` in code spans and fenced code blocks must name a script in the
+`package.json` nearest the instruction file. Without a `package.json` they are not
+judged. `ignore` also matches script names (`ignore: ["test:*"]`).
 
 ### `no-new`, `no-fewer`, `no-deleted` (diff-aware)
 
@@ -275,6 +296,31 @@ Every commit between the base and HEAD must be signed. Scope it to the push:
 in the local keyring. `verified` requires a good signature Git can check (GPG
 trust, or `gpg.ssh.allowedSignersFile` for SSH signing). Unsigned commits, bad
 signatures and revoked keys always fail. No commits since the base passes.
+
+### `commit-messages` (diff-aware)
+
+Every non-merge commit between the base and HEAD must have a subject matching
+`pattern` (optional `flags`). Fails closed without a base; no commits passes.
+
+```yaml
+- id: conventional-commits
+  type: commit-messages
+  pattern: "^(feat|fix|docs|refactor|test|chore)(\\(.+\\))?: "
+```
+
+### `pushed`
+
+Every local commit must be on the remote: HEAD is contained in `ref`, by default
+the current branch's upstream. A branch without an upstream, or a `ref` that does
+not resolve, fails closed. The gate reads the local remote-tracking ref, so fetch
+first in CI. Pair it with the stop hook so an agent cannot end its turn claiming it
+pushed while the commits are still local.
+
+```yaml
+- id: pushed
+  type: pushed
+  ref: origin/main             # optional: default is the branch's upstream
+```
 
 ### `deps-declared`
 
@@ -361,6 +407,21 @@ each required gate runs once per run.
 Move between phases with `skillgate phase <id>`: it writes the marker only if the
 target's requirements pass (exit 2 otherwise). `skillgate phase` alone shows each
 phase's status.
+
+## Warn-level gates
+
+Every gate takes `level: warn`. A warn-level gate is evaluated and reported (`!` in
+`check` output, `status: "warn"` in JSON, a `warning:` reason), but it never fails
+the run, blocks a finish line or holds a phase. Use it to roll a new gate out and
+watch what it would catch before it blocks. `level: block` is the default.
+
+```yaml
+- id: changelog-entry
+  type: file-contains
+  file: CHANGELOG.md
+  pattern: "## Unreleased"
+  level: warn
+```
 
 ## Gated tools
 

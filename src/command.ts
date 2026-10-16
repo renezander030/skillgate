@@ -12,9 +12,22 @@ export interface CommandMatch {
   segments: CommandSegment[];
 }
 
-const WRAPPERS = new Set(["command", "env", "exec", "nohup", "sudo", "time"]);
+const WRAPPERS = new Set(["command", "env", "exec", "nohup", "sudo", "time", "timeout", "nice", "ionice", "stdbuf", "xargs", "watch", "doas"]);
 const SHELLS = new Set(["sh", "bash", "zsh", "fish", "dash", "pwsh", "powershell", "cmd", "eval"]);
 const WRAPPER_OPTIONS_WITH_VALUES = new Set(["-u", "-g", "-h", "-p", "-C", "-T", "-r", "-t", "-f", "-o", "-S"]);
+/** Options that take a separate value, per wrapper whose own options differ from sudo/env. */
+const WRAPPER_OPTION_VALUES: Record<string, Set<string>> = {
+  timeout: new Set(["-s", "--signal", "-k", "--kill-after"]),
+  nice: new Set(["-n", "--adjustment"]),
+  ionice: new Set(["-c", "--class", "-n", "--classdata", "-p", "--pid", "-P", "--pgid", "-u", "--uid"]),
+  stdbuf: new Set(["-i", "-o", "-e", "--input", "--output", "--error"]),
+  xargs: new Set(["-a", "--arg-file", "-d", "--delimiter", "-E", "-e", "-I", "-i", "-L", "-l", "-n", "--max-args", "-P", "--max-procs", "-s", "--max-chars", "--process-slot-var"]),
+  watch: new Set(["-n", "--interval", "-d", "--differences", "-q", "--equexit"]),
+  doas: new Set(["-u", "-C"]),
+};
+/** `find` actions whose arguments, up to `;` or `+`, are a command. */
+const FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
 function executableName(value: string): string {
   const portable = value.replace(/\\/g, "/");
@@ -114,11 +127,21 @@ export function tokenizeCommand(segment: string): string[] {
 function unwrap(tokens: string[]): string[] {
   let i = 0;
   while (i < tokens.length) {
-    while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i++;
+    while (i < tokens.length && ASSIGNMENT.test(tokens[i])) i++;
+    if (i >= tokens.length) break;
     const name = executableName(tokens[i]);
     if (!WRAPPERS.has(name)) break;
     i++;
-    if (name === "env") {
+    if (WRAPPER_OPTION_VALUES[name]) {
+      const withValues = WRAPPER_OPTION_VALUES[name];
+      while (i < tokens.length && tokens[i].startsWith("-") && tokens[i] !== "--") {
+        const option = tokens[i++];
+        if (withValues.has(option) && i < tokens.length) i++;
+      }
+      if (tokens[i] === "--") i++;
+      // `timeout DURATION cmd`: the duration is the first operand.
+      if (name === "timeout" && i < tokens.length) i++;
+    } else if (name === "env") {
       while (i < tokens.length && (tokens[i].startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]))) {
         const option = tokens[i++];
         if (WRAPPER_OPTIONS_WITH_VALUES.has(option) && i < tokens.length) i++;
@@ -160,9 +183,48 @@ function canonicalize(tokens: string[]): string[] {
 function orderedMatch(tokens: string[], pattern: string[]): boolean {
   if (!tokens.length || !pattern.length || pattern.length > tokens.length) return false;
   return pattern.every((wanted, index) => {
+    // A value the shell decides at run time could be this word: fail closed. A dynamic
+    // program only stands in for one when the rest of a multi-word pattern matches.
+    if (isDynamic(tokens[index]) && (index > 0 || pattern.length > 1)) return true;
     const actual = index === 0 ? executableName(tokens[index]) : tokens[index].toLowerCase();
     const expected = index === 0 ? executableName(wanted) : wanted.toLowerCase();
     return actual.replace(/^[({]+|[)}]+$/g, "") === expected.replace(/^[({]+|[)}]+$/g, "");
+  });
+}
+
+/** Commands `find` runs through -exec/-execdir/-ok/-okdir. */
+function findExecCommands(tokens: string[]): string[] {
+  if (!tokens.length || executableName(tokens[0]) !== "find") return [];
+  const out: string[] = [];
+  for (let i = 1; i < tokens.length; i++) {
+    if (!FIND_EXEC.has(tokens[i])) continue;
+    const start = i + 1;
+    let end = start;
+    while (end < tokens.length && ![";", "\\;", "+"].includes(tokens[end])) end++;
+    if (end > start) out.push(tokens.slice(start, end).join(" "));
+    i = end;
+  }
+  return out;
+}
+
+/** A token whose value is only known when the shell runs: a variable or a command substitution. */
+function isDynamic(token: string): boolean {
+  return /\$[A-Za-z_{(]|`/.test(token);
+}
+
+/** `$(which git)`, `$(command -v git)` and their backtick forms name the program they print. */
+function resolveLookups(raw: string): string {
+  return raw
+    .replace(/\$\(\s*(?:which|command\s+-v|type\s+-p)\s+([A-Za-z0-9_.\/-]+)\s*\)/g, "$1")
+    .replace(/`\s*(?:which|command\s+-v|type\s+-p)\s+([A-Za-z0-9_.\/-]+)\s*`/g, "$1");
+}
+
+/** Replace `$NAME` / `${NAME}` tokens with values assigned earlier in the same command. */
+function substitute(tokens: string[], vars: Map<string, string>): string[] {
+  return tokens.map((token) => {
+    const ref = /^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))$/.exec(token);
+    const name = ref?.[1] ?? ref?.[2];
+    return name != null && vars.has(name) ? vars.get(name)! : token;
   });
 }
 
@@ -230,14 +292,21 @@ function commandSubstitutions(raw: string): string[] {
 
 export function analyzeCommand(command: string, patterns: string[] = []): CommandMatch {
   const segments: CommandSegment[] = [];
+  const vars = new Map<string, string>();
   const pending = splitCommand(command);
   for (let i = 0; i < pending.length; i++) {
     const raw = pending[i];
     const tokens = tokenizeCommand(raw);
-    const unwrapped = unwrap(tokens);
+    if (tokens.length && tokens.every((token) => ASSIGNMENT.test(token))) {
+      for (const token of tokens) {
+        const at = token.indexOf("=");
+        vars.set(token.slice(0, at), token.slice(at + 1));
+      }
+    }
+    const unwrapped = unwrap(substitute(tokenizeCommand(resolveLookups(raw)), vars));
     const normalized = canonicalize(unwrapped);
     segments.push({ raw, tokens, normalized });
-    pending.push(...nestedShellCommands(unwrapped), ...commandSubstitutions(raw));
+    pending.push(...nestedShellCommands(unwrapped), ...findExecCommands(unwrapped), ...commandSubstitutions(raw));
   }
 
   const matchedPatterns: string[] = [];

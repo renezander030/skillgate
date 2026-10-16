@@ -264,8 +264,12 @@ For CI evidence and repeated local checks:
 
 ```bash
 skillgate check --receipt .skillgate/evidence/gate-receipt.json
+skillgate verify-receipt .skillgate/evidence/gate-receipt.json   # later, in CI or review
 skillgate check --cache --json
 ```
+
+`verify-receipt` recomputes the snapshot for the files, policy and base in front of
+it and exits 0 only when the receipt matches them and records a passing run.
 
 Receipts include the per-gate status, reason, duration, total budget, and workspace
 snapshot hash. `--cache` reuses passing results only when the parsed policy, runtime,
@@ -283,10 +287,10 @@ A `file-contains` gate (e.g. require a touched changelog) and the other types ar
 | `absent` | `pattern` appears in **no** file matched by `glob` (reports `file:line`) |
 | `command` | `run` exits 0 — only as deterministic as the command |
 | `trivy` | Trivy finds no leaked secrets, no blocking CVEs, and can generate a CycloneDX SBOM |
-| `evidence` | a named `file` exists and is non-empty |
+| `evidence` | a named `file` exists and is non-empty (`newerThan: "src/**"`: and was written after the last change to those files) |
 | `not-empty` | a directory at `path` contains at least `min` entries (default 1) |
 | `instruction-sync` | every AI agent instruction file (CLAUDE.md, AGENTS.md, Cursor, Copilot…) still agrees with the canonical one (optional `threshold`, default 0.95; `require` lists tools that must have their own file) |
-| `instruction-refs` | every path an instruction file points at (`@imports`, relative links, `src/...` code spans) still exists |
+| `instruction-refs` | every path an instruction file points at (`@imports`, relative links, `src/...` code spans) still exists, and every `npm run <script>` it tells the agent to run is in `package.json` |
 | `no-new` | the count of `pattern` matches in `glob` did not **increase** versus the base ref (skips, `eslint-disable`, TODOs) |
 | `no-fewer` | the count of `pattern` matches in `glob` did not **decrease** versus the base ref (test cases, assertions) |
 | `no-deleted` | every file matching `glob` at the base ref still exists |
@@ -294,11 +298,14 @@ A `file-contains` gate (e.g. require a touched changelog) and the other types ar
 | `deps-locked` | every dependency declared in `package.json` / `pyproject.toml` is in the lockfile, so a hallucinated package can't slip in |
 | `deps-declared` | every package a JS/TS file in `glob` imports is declared in the nearest `package.json` |
 | `signed-commits` | every commit between the base ref and HEAD is signed (`trust: verified` for a good, checkable signature) |
+| `commit-messages` | every non-merge commit subject between the base ref and HEAD matches `pattern` (Conventional Commits, ticket prefixes) |
+| `pushed` | every local commit is on the remote: HEAD is contained in the upstream (or `ref`) |
 | `phase` | the gates required by the active phase and every earlier one pass now (plan → build → review) |
 
 A glob that matches no files fails its gate instead of passing as a silent no-op
 (set `allowEmpty: true` when that is expected). Pattern gates fail on files over
-`maxBytes` (default 10 MiB) rather than hanging on them.
+`maxBytes` (default 10 MiB) rather than hanging on them. Any gate takes
+`level: warn` to report a failure without blocking, for rolling out a new gate.
 
 **Different gates for different finish lines.** A `when` block scopes a gate by
 command, changed files, or branch. Fast gates on every commit, the full suite only
@@ -397,7 +404,7 @@ canonical: AGENTS.md
 ✗ 1 of 3 instruction files drifted — run `skillgate sync`
 ```
 
-`sync` understands harness semantics, not just bytes: import-capable tools (Claude Code, Gemini) get a one-line `@AGENTS.md` pointer, the rest get a synced copy, `@AGENTS.md` imports and symlinks already count as linked, and Cursor's `.mdc` frontmatter is per-tool config that's ignored in comparison. The canonical source is `AGENTS.md` when present, otherwise the freshest file. (This capability was the standalone `adrift` tool, now folded in.)
+`sync` understands harness semantics, not just bytes: import-capable tools (Claude Code, Gemini) get a one-line `@AGENTS.md` pointer, the rest get a synced copy, `@AGENTS.md` imports and symlinks already count as linked, and Cursor's `.mdc` frontmatter is per-tool config that's ignored in comparison. The canonical source is the file `skillgate canonical` named, else `AGENTS.md` when present, else the freshest file. (This capability was the standalone `adrift` tool, now folded in.)
 
 ## Wire it into your agent
 

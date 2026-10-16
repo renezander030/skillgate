@@ -68,6 +68,7 @@
             "id": { "type": "string" },
             "description": { "type": "string" },
             "when": { "$ref": "#/definitions/when" },
+            "level": { "enum": ["block", "warn"], "description": "warn reports a failure without failing the run or blocking. Default block." },
             "type": { "const": "trufflehog" },
             "trufflehog": { "type": "string", "minLength": 1 },
             "namesFile": { "type": "string", "minLength": 1 },
@@ -83,6 +84,7 @@
             "id": { "type": "string" },
             "description": { "type": "string" },
             "when": { "$ref": "#/definitions/when" },
+            "level": { "enum": ["block", "warn"], "description": "warn reports a failure without failing the run or blocking. Default block." },
             "type": { "const": "review" },
             "file": { "type": "string", "minLength": 1 }
           }
@@ -95,6 +97,7 @@
             "id": { "type": "string" },
             "description": { "type": "string" },
             "when": { "$ref": "#/definitions/when" },
+            "level": { "enum": ["block", "warn"], "description": "warn reports a failure without failing the run or blocking. Default block." },
             "type": { "const": "file-exists" },
             "file": {
               "oneOf": [
@@ -113,6 +116,7 @@
             "id": { "type": "string" },
             "description": { "type": "string" },
             "when": { "$ref": "#/definitions/when" },
+            "level": { "enum": ["block", "warn"], "description": "warn reports a failure without failing the run or blocking. Default block." },
             "type": { "const": "file-contains" },
             "file": { "type": "string" },
             "pattern": { "type": "string", "description": "JavaScript regular expression source." },
@@ -128,6 +132,7 @@
             "id": { "type": "string" },
             "description": { "type": "string" },
             "when": { "$ref": "#/definitions/when" },
+            "level": { "enum": ["block", "warn"], "description": "warn reports a failure without failing the run or blocking. Default block." },
             "type": { "const": "absent" },
             "glob": { "type": "string", "description": "Files to scan." },
             "pattern": { "type": "string", "description": "Regex that must NOT appear." },
@@ -149,6 +154,7 @@
             "id": { "type": "string" },
             "description": { "type": "string" },
             "when": { "$ref": "#/definitions/when" },
+            "level": { "enum": ["block", "warn"], "description": "warn reports a failure without failing the run or blocking. Default block." },
             "type": { "const": "command" },
             "run": { "type": "string", "description": "Shell command; must exit 0." },
             "timeout": { "type": "integer", "minimum": 1, "description": "Timeout in milliseconds. Default 30000." }
@@ -162,6 +168,7 @@
             "id": { "type": "string" },
             "description": { "type": "string" },
             "when": { "$ref": "#/definitions/when" },
+            "level": { "enum": ["block", "warn"], "description": "warn reports a failure without failing the run or blocking. Default block." },
             "type": { "const": "trivy" },
             "target": { "type": "string", "description": "Path to scan. Default \".\"." },
             "trivy": { "type": "string", "description": "Trivy binary to execute. Default \"trivy\"." },
@@ -198,8 +205,11 @@
             "id": { "type": "string" },
             "description": { "type": "string" },
             "when": { "$ref": "#/definitions/when" },
+            "level": { "enum": ["block", "warn"], "description": "warn reports a failure without failing the run or blocking. Default block." },
             "type": { "const": "evidence" },
-            "file": { "type": "string", "description": "A file that must exist and be non-empty." }
+            "file": { "type": "string", "description": "A file that must exist and be non-empty." },
+            "newerThan": { "type": "string", "description": "Glob of files the evidence must be newer than: written after the last change to any of them." },
+            "ignore": { "type": "array", "items": { "type": "string" }, "description": "Globs excluded from newerThan." }
           }
         },
         {
@@ -210,6 +220,7 @@
             "id": { "type": "string" },
             "description": { "type": "string" },
             "when": { "$ref": "#/definitions/when" },
+            "level": { "enum": ["block", "warn"], "description": "warn reports a failure without failing the run or blocking. Default block." },
             "type": { "const": "instruction-sync" },
             "threshold": {
               "type": "number",
@@ -233,6 +244,7 @@
             "id": { "type": "string" },
             "description": { "type": "string" },
             "when": { "$ref": "#/definitions/when" },
+            "level": { "enum": ["block", "warn"], "description": "warn reports a failure without failing the run or blocking. Default block." },
             "type": { "const": "instruction-refs" },
             "ignore": { "type": "array", "items": { "type": "string" }, "description": "Globs of referenced paths to skip." }
           }
@@ -245,6 +257,7 @@
             "id": { "type": "string" },
             "description": { "type": "string" },
             "when": { "$ref": "#/definitions/when" },
+            "level": { "enum": ["block", "warn"], "description": "warn reports a failure without failing the run or blocking. Default block." },
             "type": { "const": "not-empty" },
             "path": { "type": "string", "description": "Directory path that must contain at least `min` entries." },
             "min": {
@@ -262,6 +275,7 @@
             "id": { "type": "string" },
             "description": { "type": "string" },
             "when": { "$ref": "#/definitions/when" },
+            "level": { "enum": ["block", "warn"], "description": "warn reports a failure without failing the run or blocking. Default block." },
             "type": { "const": "no-new" },
             "glob": { "type": "string", "description": "Files to scan." },
             "pattern": { "type": "string", "description": "Regex whose match count must not increase versus the base ref." },
@@ -283,6 +297,7 @@
             "id": { "type": "string" },
             "description": { "type": "string" },
             "when": { "$ref": "#/definitions/when" },
+            "level": { "enum": ["block", "warn"], "description": "warn reports a failure without failing the run or blocking. Default block." },
             "type": { "const": "no-deleted" },
             "glob": { "type": "string", "description": "Files that existed at the base ref and must still exist." },
             "ignore": {
@@ -301,6 +316,7 @@
             "id": { "type": "string" },
             "description": { "type": "string" },
             "when": { "$ref": "#/definitions/when" },
+            "level": { "enum": ["block", "warn"], "description": "warn reports a failure without failing the run or blocking. Default block." },
             "type": { "const": "no-fewer" },
             "glob": { "type": "string", "description": "Files to scan." },
             "pattern": { "type": "string", "description": "Regex whose match count must not decrease versus the base ref (test cases, assertions)." },
@@ -322,6 +338,7 @@
             "id": { "type": "string" },
             "description": { "type": "string" },
             "when": { "$ref": "#/definitions/when" },
+            "level": { "enum": ["block", "warn"], "description": "warn reports a failure without failing the run or blocking. Default block." },
             "type": { "const": "deps-locked" },
             "manifest": {
               "oneOf": [
@@ -340,6 +357,7 @@
             "id": { "type": "string" },
             "description": { "type": "string" },
             "when": { "$ref": "#/definitions/when" },
+            "level": { "enum": ["block", "warn"], "description": "warn reports a failure without failing the run or blocking. Default block." },
             "type": { "const": "phase" },
             "phases": {
               "type": "array",
@@ -366,6 +384,7 @@
             "id": { "type": "string" },
             "description": { "type": "string" },
             "when": { "$ref": "#/definitions/when" },
+            "level": { "enum": ["block", "warn"], "description": "warn reports a failure without failing the run or blocking. Default block." },
             "type": { "const": "unchanged" },
             "glob": { "type": "string", "description": "Files that exist at the base ref and must stay byte-identical." },
             "ignore": { "type": "array", "items": { "type": "string" }, "description": "Extra globs that may change." },
@@ -380,6 +399,7 @@
             "id": { "type": "string" },
             "description": { "type": "string" },
             "when": { "$ref": "#/definitions/when" },
+            "level": { "enum": ["block", "warn"], "description": "warn reports a failure without failing the run or blocking. Default block." },
             "type": { "const": "deps-declared" },
             "glob": { "type": "string", "description": "JavaScript/TypeScript source files to scan." },
             "ignore": { "type": "array", "items": { "type": "string" }, "description": "Extra globs to exclude." },
@@ -396,8 +416,36 @@
             "id": { "type": "string" },
             "description": { "type": "string" },
             "when": { "$ref": "#/definitions/when" },
+            "level": { "enum": ["block", "warn"], "description": "warn reports a failure without failing the run or blocking. Default block." },
             "type": { "const": "signed-commits" },
             "trust": { "enum": ["signed", "verified"], "description": "signed (default): any signature git did not reject. verified: a good signature git can check." }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "pattern"],
+          "properties": {
+            "id": { "type": "string" },
+            "description": { "type": "string" },
+            "when": { "$ref": "#/definitions/when" },
+            "level": { "enum": ["block", "warn"], "description": "warn reports a failure without failing the run or blocking. Default block." },
+            "type": { "const": "commit-messages" },
+            "pattern": { "type": "string", "description": "Regular expression every non-merge commit subject since the base must match." },
+            "flags": { "type": "string", "description": "Regular expression flags, e.g. i." }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type"],
+          "properties": {
+            "id": { "type": "string" },
+            "description": { "type": "string" },
+            "when": { "$ref": "#/definitions/when" },
+            "level": { "enum": ["block", "warn"], "description": "warn reports a failure without failing the run or blocking. Default block." },
+            "type": { "const": "pushed" },
+            "ref": { "type": "string", "description": "Remote ref that must contain HEAD, e.g. origin/main. Default: the branch's upstream." }
           }
         }
       ]

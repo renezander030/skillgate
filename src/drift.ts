@@ -143,7 +143,31 @@ function baseName(p: string): string {
 }
 
 /** Prefer AGENTS.md (the cross-tool standard); else the freshest source. */
-export function pickCanonical(sources: Source[]): Source {
+/** Written by `skillgate canonical`: the instruction file the others must agree with. */
+const CANONICAL_MARKER = ".skillgate/canonical-instructions.txt";
+
+/** Name `file` (absolute) as the canonical instruction source of `root`. */
+export function setCanonical(root: string, file: string): void {
+  const marker = path.join(root, CANONICAL_MARKER);
+  fs.mkdirSync(path.dirname(marker), { recursive: true });
+  fs.writeFileSync(marker, path.relative(root, file).split(path.sep).join("/") + "\n");
+}
+
+/** The workspace-relative file the canonical marker names, or null. */
+function markedCanonical(root: string): string | null {
+  try {
+    const text = fs.readFileSync(path.join(root, CANONICAL_MARKER), "utf8").split(/\r?\n/)[0].trim();
+    return text ? path.posix.normalize(text.replace(/\\/g, "/").replace(/^\.\//, "")) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The canonical source: the one the marker under `root` names, else AGENTS.md, else the most recently changed. */
+export function pickCanonical(sources: Source[], root?: string): Source {
+  const marked = root ? markedCanonical(root) : null;
+  const named = marked ? sources.find((s) => s.files.includes(marked)) : undefined;
+  if (named) return named;
   for (const s of sources) if (s.tool === "AGENTS.md") return s;
   let best = sources[0];
   for (const s of sources.slice(1)) if (s.modTimeMs > best.modTimeMs) best = s;
@@ -313,7 +337,7 @@ function scoreDrift(root: string, sources: Source[], threshold: number): { resul
   };
   if (sources.length === 0) return { result: res };
 
-  const canon = pickCanonical(sources);
+  const canon = pickCanonical(sources, root);
   res.canonical = canon.files.join(", ");
 
   for (const src of sources) {
