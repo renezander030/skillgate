@@ -9,10 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { runGates, gatesForCommand } from "../src/core.js";
-import { findImports, packageName } from "../src/imports.js";
-import { extractRefs } from "../src/refs.js";
-import { summarizeLog, logPathProblem } from "../src/log.js";
+import { runGates } from "../src/core.js";
 import { runSync } from "../src/link.js";
 import { parseSpec, type Spec } from "../src/spec.js";
 
@@ -154,4 +151,87 @@ test("level warn: a failing gate is reported but never fails the run or blocks",
   assert.match(check.stdout, /\(1 warning\)/);
   assert.equal(sg(["gate", "--command", "git push", "--json"], dir).status, 0);
   assert.throws(() => parseSpec(JSON.stringify({ gates: [{ id: "x", type: "file-exists", file: "a", level: "soft" }] }), "t", true), /level must be block or warn/);
+});
+
+// ---- verify-receipt -----------------------------------------------------------
+
+test("verify-receipt: valid for the exact files and policy, invalid after any change", () => {
+  const dir = tmpProject({
+    "README.md": "hi\n",
+    ".skillgate/done.yaml": "finishLine: [\"git push\"]\ngates:\n  - id: readme\n    type: file-exists\n    file: README.md\n  - id: push-only\n    type: file-exists\n    file: README.md\n    when:\n      command: [\"git push\"]\n",
+  });
+  assert.equal(sg(["check", "--receipt", "out/receipt.json", "--command", "git push", "--timeout", "60000"], dir).status, 0);
+  const receipt = JSON.parse(fs.readFileSync(path.join(dir, "out/receipt.json"), "utf8"));
+  assert.deepEqual(receipt.inputs, { timeoutMs: 60000, command: "git push" });
+  const ok = sg(["verify-receipt", "out/receipt.json", "--json"], dir);
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(JSON.parse(ok.stdout).valid, true);
+  assert.match(sg(["verify-receipt", "out/receipt.json"], dir).stdout, /✓ VALID/);
+  write(dir, { "README.md": "changed\n" });
+  const changed = sg(["verify-receipt", "out/receipt.json"], dir);
+  assert.equal(changed.status, 1);
+  assert.match(changed.stderr, /INVALID · the files, policy or base changed since the receipt was written/);
+  write(dir, { "README.md": "hi\n" });
+  assert.equal(sg(["verify-receipt", "out/receipt.json"], dir).status, 0);
+  write(dir, { ".skillgate/done.yaml": "finishLine: [\"git push\"]\ngates:\n  - id: readme\n    type: file-exists\n    file: README.md\n" });
+  assert.equal(sg(["verify-receipt", "out/receipt.json"], dir).status, 1);
+});
+
+test("verify-receipt: a failing run or an unreadable file is never valid", () => {
+  const dir = tmpProject({ ".skillgate/done.yaml": "gates:\n  - id: readme\n    type: file-exists\n    file: README.md\n" });
+  assert.equal(sg(["check", "--receipt", "r.json"], dir).status, 1);
+  const failing = sg(["verify-receipt", "r.json"], dir);
+  assert.equal(failing.status, 1);
+  assert.match(failing.stderr, /records a failing run \(1 gate\(s\) unmet\)/);
+  assert.equal(sg(["verify-receipt", "missing.json"], dir).status, 2);
+  write(dir, { "bogus.json": "{\"format\":2}" });
+  assert.match(sg(["verify-receipt", "bogus.json"], dir).stderr, /not a skillgate receipt/);
+  assert.equal(sg(["verify-receipt"], dir).status, 2);
+});
+
+// ---- instruction-refs: npm scripts ----------------------------------------------
+
+test("instruction-refs: npm run references must name a script in the nearest package.json", () => {
+  const dir = tmpProject({
+    "package.json": JSON.stringify({ scripts: { build: "tsc", "test:unit": "node --test" } }),
+    "AGENTS.md": "# rules\nRun `npm run build` then `pnpm run test:unit`.\n\n```sh\nnpm run --silent test:e2e\nnpm run <script>\n```\n",
+  });
+  const spec: Spec = { gates: [{ id: "refs", type: "instruction-refs" }] };
+  const r = runGates(spec, dir);
+  assert.equal(r.passed, false);
+  assert.match(r.results[0].reason, /1 stale reference in instruction files: AGENTS\.md:5 → npm run --silent test:e2e/);
+  write(dir, { "package.json": JSON.stringify({ scripts: { build: "tsc", "test:unit": "node --test", "test:e2e": "x" } }) });
+  assert.match(runGates(spec, dir).results[0].reason, /0 path references and 3 script references in 1 instruction files resolve/);
+  assert.equal(runGates({ gates: [{ id: "refs", type: "instruction-refs", ignore: ["test:*"] }] }, dir).passed, true);
+});
+
+test("instruction-refs: script references are not judged without a package.json", () => {
+  const dir = tmpProject({ "AGENTS.md": "Run `npm run build`.\n" });
+  const r = runGates({ gates: [{ id: "refs", type: "instruction-refs" }] }, dir);
+  assert.equal(r.passed, true);
+  assert.match(r.results[0].reason, /^0 path references in 1 instruction files resolve$/);
+});
+
+// ---- canonical marker -----------------------------------------------------------
+
+test("canonical: drift compares against the file the marker names", () => {
+  const dir = tmpProject({ "AGENTS.md": "# old rules\nalpha\n", "CLAUDE.md": "# rules\none\ntwo\nthree\n", "GEMINI.md": "# rules\none\ntwo\nthree\n" });
+  assert.equal(sg(["drift", "--json"], dir).status, 1);
+  const set = sg(["canonical", "CLAUDE.md"], dir);
+  assert.equal(set.status, 0);
+  assert.equal(fs.readFileSync(path.join(dir, ".skillgate/canonical-instructions.txt"), "utf8"), "CLAUDE.md\n");
+  const drift = JSON.parse(sg(["drift", "--json"], dir).stdout);
+  assert.equal(drift.canonical, "CLAUDE.md");
+  assert.deepEqual(drift.entries.filter((e: any) => e.status === "drifted").map((e: any) => e.tool), ["AGENTS.md"]);
+  const diff = sg(["diff-instructions"], dir);
+  assert.match(diff.stdout, /AGENTS\.md — \d+% similarity with CLAUDE\.md/);
+});
+
+test("canonical: sync seeds a missing AGENTS.md from the marked file, not the freshest", () => {
+  const dir = tmpProject({ "CLAUDE.md": "# claude rules\n", "GEMINI.md": "# gemini rules\n", ".skillgate/canonical-instructions.txt": "CLAUDE.md\n" });
+  const later = new Date(Date.now() + 60_000);
+  fs.utimesSync(path.join(dir, "GEMINI.md"), later, later);
+  const { lines } = runSync(dir, {});
+  assert.ok(lines.some((l) => /AGENTS\.md\s+created from CLAUDE\.md/.test(l)), lines.join("\n"));
+  assert.equal(fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8"), "# claude rules\n");
 });

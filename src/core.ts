@@ -575,7 +575,8 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
         const res = checkInstructionRefs(cwd, gate.ignore ?? []);
         if (res.files.length === 0) return { ...base, ok: true, reason: "no agent instruction files found" };
         if (res.missing.length === 0) {
-          return { ...base, ok: true, reason: `${res.checked} path references in ${res.files.length} instruction files resolve` };
+          const paths = res.checked - (res.scripts ?? 0);
+          return { ...base, ok: true, reason: `${paths} path references${res.scripts ? ` and ${res.scripts} script references` : ""} in ${res.files.length} instruction files resolve` };
         }
         const first = res.missing[0];
         return {

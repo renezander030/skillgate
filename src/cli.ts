@@ -7,13 +7,13 @@ import { fileURLToPath } from "node:url";
 import { findSpecPath, loadSpec, parseSpec, specRoot, workspaceRoot, DEFAULT_SPEC_PATHS, DEFAULT_PHASE_FILE, DEFAULT_RUN_TIMEOUT_MS, type Spec, type PhaseGate } from "./spec.js";
 import { runGates, decideCommand, decideTool, currentPhase, evaluatePhase, gatesForCommand, type GateResult, type RunResult } from "./core.js";
 import { appendLog, logPath, logPathProblem, summarizeLog, toFailed, type LogRecord } from "./log.js";
-import { checkDrift, driftDiffs, DEFAULT_THRESHOLD } from "./drift.js";
+import { checkDrift, driftDiffs, DEFAULT_THRESHOLD, CANONICAL_MARKER } from "./drift.js";
 import { runSync } from "./link.js";
 import { runScaffold, templateHelp } from "./scaffold.js";
 import { doctor, installIntegration, INTEGRATION_TARGETS, type IntegrationTarget } from "./integrations.js";
 import { analyzeCommand } from "./command.js";
 import { reviewSnapshot } from "./review.js";
-import { EVALUATOR_VERSION, cacheDisabledReason, receiptPathIsInput, readCachedResult, snapshotKey, writeCachedResult, writeReceipt } from "./receipt.js";
+import { EVALUATOR_VERSION, cacheDisabledReason, receiptPathIsInput, readCachedResult, runSnapshot, verifyReceipt, writeCachedResult, writeReceipt } from "./receipt.js";
 import { resolveBaseRef, mergeBase, readFileAtRef, repoRelativePath, repoRoot, isClean } from "./git.js";
 import {
   createPrivatePassProof,
@@ -88,6 +88,7 @@ Usage:
   skillgate check [spec]             run gates, exit 1 if any fail
   skillgate verify-patch             evaluate an agent's patch in a network-off clone; block apply until your DoD passes
   skillgate verify-apply             land the verified patch into the real repo (only after verify-patch passes)
+  skillgate verify-receipt <file>    check a receipt matches these files and policy and records a pass
   skillgate zk-keygen                create a private BBS signing key and shareable public key
   skillgate zk-policy-id [spec]      print the stable hash a verifier should pin
   skillgate zk-prove [spec]          prove PASS while hiding private repo and gate details
@@ -113,7 +114,7 @@ Usage:
   skillgate --version
 
 Flags:
-  --json                   machine-readable output (check, gate, drift)
+  --json                   machine-readable output (check, gate, drift, verify-receipt)
   --cwd <dir>              run against another directory
   --pin                    check/gate: read the spec from the base ref, not the
                            working tree, so a change can't loosen its own gate
@@ -713,24 +714,21 @@ if (cmd === "check") {
     const receipt = option("--receipt");
     const receiptFile = receipt ? path.resolve(cwd, receipt) : undefined;
     if (receiptFile && receiptPathIsInput(r.spec, r.workspace, receiptFile)) throw new Error("--receipt must not overwrite or exclude a gate input; choose an output outside the gates' paths/globs");
-    const receiptRel = receiptFile ? path.relative(r.workspace, receiptFile).split(path.sep).join("/") : "";
-    const snapshotIgnore = receiptRel && !receiptRel.startsWith("../") ? [receiptRel] : [];
-    // The judged command changes which gates apply, so it is part of the snapshot.
-    const snapshotSpec = { ...r.spec, timeout: timeoutMs ?? r.spec.timeout, ...(forCommand != null ? { forCommand } : {}) } as Spec;
-    if (cache || receipt) snapshot = snapshotKey(snapshotSpec, r.workspace, r.gateBase, snapshotIgnore);
+    const inputs = { timeoutMs, command: forCommand };
+    if (cache || receipt) snapshot = runSnapshot(r.spec, r.workspace, r.gateBase, inputs, receiptFile);
     const cached = cache && snapshot ? readCachedResult(r.workspace, snapshot, r.spec) : null;
     if (cached) {
       result = cached;
       cacheHit = true;
     } else {
       result = runGates(r.spec, r.workspace, { baseRef: r.gateBase, timeoutMs, command: forCommand });
-      if (snapshot && snapshotKey(snapshotSpec, r.workspace, r.gateBase, snapshotIgnore) !== snapshot) {
+      if (snapshot && runSnapshot(r.spec, r.workspace, r.gateBase, inputs, receiptFile) !== snapshot) {
         const changed: GateResult = { id: "skillgate:snapshot", type: "snapshot", ok: false, status: "fail", reason: "workspace changed during evaluation; rerun checks against the final files" };
         result = { ...result, passed: false, results: [...result.results, changed], failed: [...result.failed, changed] };
       }
       if (cache && snapshot) writeCachedResult(r.workspace, snapshot, result);
     }
-    if (receiptFile && snapshot) writeReceipt(receiptFile, snapshot, result, cacheHit ? "cache" : "executed");
+    if (receiptFile && snapshot) writeReceipt(receiptFile, snapshot, result, cacheHit ? "cache" : "executed", inputs);
     recordDecision(r.workspace, {
       via: "check",
       event: "check",
@@ -768,6 +766,26 @@ if (cmd === "check") {
       result.failed.map((f) => f.id).join(", "),
   );
   process.exit(1);
+}
+
+if (cmd === "verify-receipt") {
+  const file = positionalPath();
+  if (!file) die(2, "usage: skillgate verify-receipt <receipt> [--command <cmd>] [--timeout <ms>]");
+  let verdict;
+  try {
+    const r = resolveSpecAndBase(findSpecPath(cwd));
+    verdict = verifyReceipt(file, r.spec, r.workspace, r.gateBase, { timeoutMs: timeoutOption(), command: option("--command") });
+  } catch (e: any) {
+    die(2, e.message);
+  }
+  if (json) {
+    console.log(JSON.stringify(verdict, null, 2));
+  } else if (verdict.valid) {
+    console.log(c(C.green, "✓ VALID") + ` · ${verdict.reason}`);
+  } else {
+    console.error(c(C.red, "✗ INVALID") + ` · ${verdict.reason}`);
+  }
+  process.exit(verdict.valid ? 0 : 1);
 }
 
 if (cmd === "drift") {
@@ -854,12 +872,11 @@ if (cmd === "canonical") {
     console.error(c(C.red, `file not found: ${fileArg}`));
     process.exit(2);
   }
-  // Write a .skillgate/canonical marker file pointing to the canonical source
-  const markerDir = path.join(cwd, ".skillgate");
-  fs.mkdirSync(markerDir, { recursive: true });
-  const markerPath = path.join(markerDir, "canonical-instructions.txt");
+  // drift, diff-instructions and instruction-sync compare every other file against it.
+  const markerPath = path.join(cwd, CANONICAL_MARKER);
+  fs.mkdirSync(path.dirname(markerPath), { recursive: true });
   const relPath = path.relative(cwd, canonPath);
-  fs.writeFileSync(markerPath, relPath + "\n");
+  fs.writeFileSync(markerPath, relPath.split(path.sep).join("/") + "\n");
   console.log(c(C.green, `✓ canonical instruction source set to ${relPath}`));
   process.exit(0);
 }

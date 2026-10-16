@@ -58,7 +58,7 @@ export function runSync(root: string, opts: SyncOptions = {}): SyncResult {
     }
   }
   if (!hasAgentsMd) {
-    const freshest = pickCanonical(sources);
+    const freshest = pickCanonical(sources, root);
     canonContent = freshest.content;
     lines.push(`  + AGENTS.md  ${verb}created from ${freshest.files.join(", ")}`);
     if (!dryRun) fs.writeFileSync(path.join(root, "AGENTS.md"), canonContent);

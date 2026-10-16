@@ -12,14 +12,19 @@ export interface InstructionRef {
   line: number;
   /** The path as written. */
   ref: string;
-  kind: "import" | "link" | "code";
+  kind: "import" | "link" | "code" | "script";
 }
 
 export interface RefsResult {
   files: string[];
   checked: number;
   missing: InstructionRef[];
+  /** Package-manager script references (`npm run build`) among `checked`. */
+  scripts?: number;
 }
+
+/** `npm run x`, `pnpm run x`, `yarn run x`, `bun run x`, `npm run-script x`: the script name. */
+const SCRIPT_RUN = /\b(?:npm|pnpm|yarn|bun)\s+(?:run|run-script)\s+(?:--?[\w-]+(?:=\S+)?\s+)*([\w:.@/-]+)/g;
 
 /** Extensions that mark a reference as a file rather than a branch or package name. */
 const KNOWN_EXT = /\.(md|mdc|mdx|txt|json|jsonc|ya?ml|toml|ini|lock|[cm]?[jt]sx?|py|rs|go|rb|java|kt|swift|c|h|cpp|cs|php|sh|ps1|sql|html|css|scss|svg|png)$/i;
@@ -44,6 +49,10 @@ export function extractRefs(content: string, file: string): InstructionRef[] {
     if (/^\s*(```|~~~)/.test(raw)) {
       fenced = !fenced;
       return;
+    }
+    // Script runs are judged in code blocks and code spans alike: both are commands the agent copies.
+    for (const text of fenced ? [raw] : [...raw.matchAll(/`([^`\n]+)`/g)].map((m) => m[1])) {
+      for (const m of text.matchAll(SCRIPT_RUN)) refs.push({ file, line, ref: m[0].trim().replace(/\s+/g, " "), kind: "script" });
     }
     if (fenced) return;
     // Claude Code / Gemini CLI imports: "@path/to/file.md" at the start or after whitespace.
@@ -72,6 +81,22 @@ export function extractRefs(content: string, file: string): InstructionRef[] {
   return refs;
 }
 
+/** Scripts of the nearest package.json from `fromDir` up to `root`, or null when there is none. */
+function nearestScripts(root: string, fromDir: string): Record<string, unknown> | null {
+  for (let dir = fromDir; ; dir = path.dirname(dir)) {
+    const manifest = path.join(dir, "package.json");
+    if (fs.existsSync(manifest)) {
+      try {
+        const scripts = JSON.parse(fs.readFileSync(manifest, "utf8"))?.scripts;
+        return scripts && typeof scripts === "object" ? scripts : {};
+      } catch {
+        return null;
+      }
+    }
+    if (path.resolve(dir) === path.resolve(root) || path.dirname(dir) === dir) return null;
+  }
+}
+
 function exists(root: string, fromDir: string, rel: string): boolean {
   return [path.resolve(fromDir, rel), path.resolve(root, rel)].some((candidate) => fs.existsSync(candidate));
 }
@@ -92,12 +117,24 @@ function isRepoPath(root: string, fromDir: string, ref: InstructionRef): boolean
 /** Check every reference in every discovered instruction file under `root`. */
 export function checkInstructionRefs(root: string, ignore: string[] = []): RefsResult {
   const files = [...new Set(discover(root).flatMap((source) => source.files))];
-  const result: RefsResult = { files, checked: 0, missing: [] };
+  const result: RefsResult = { files, checked: 0, missing: [], scripts: 0 };
   const seen = new Set<string>();
   for (const file of files) {
     const full = path.resolve(root, file);
     const fromDir = path.dirname(full);
     for (const ref of extractRefs(fs.readFileSync(full, "utf8"), file)) {
+      if (ref.kind === "script") {
+        // Judged only against a package.json the instruction file sits under.
+        const scripts = nearestScripts(root, fromDir);
+        const name = ref.ref.split(" ").pop()!;
+        const key = `${file}\0${ref.ref}`;
+        if (!scripts || ignore.some((glob) => matchesGlob(ref.ref, glob) || matchesGlob(name, glob)) || seen.has(key)) continue;
+        seen.add(key);
+        result.checked++;
+        result.scripts!++;
+        if (!Object.prototype.hasOwnProperty.call(scripts, name)) result.missing.push(ref);
+        continue;
+      }
       const normalized = path.posix.normalize(ref.ref.replace(/^\.\//, "")).replace(/\/$/, "");
       if (ignore.some((glob) => matchesGlob(normalized, glob) || matchesGlob(ref.ref, glob))) continue;
       if (!isRepoPath(root, fromDir, ref)) continue;
