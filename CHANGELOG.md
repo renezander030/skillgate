@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+## 0.15.0 - 2026-10-16
+
+### Added
+- `pushed` gate: every local commit must be on the remote, meaning HEAD is contained in
+  the branch's upstream or in `ref`. A missing upstream fails closed. Pair it with the
+  stop hook so an agent cannot end its turn claiming it pushed.
+- `commit-messages` gate: every non-merge commit subject between the base ref and
+  HEAD must match `pattern`. Diff-aware and fails closed without a base.
+- `evidence` gains `newerThan`: the evidence file must be newer than every file the
+  glob matches, so a test log written before the last edit fails as stale.
+- `level: warn` on any gate: a failure is reported (`!`, `status: "warn"`, a
+  `warning:` reason) but never fails the run, blocks a finish line or holds a phase.
+- `skillgate verify-receipt <file>`: recomputes the snapshot for the current files,
+  policy and base, and exits 0 only when the receipt matches and records a pass.
+  Receipts now record the `--timeout` and `--command` they were written with.
+- `instruction-refs` checks `npm run`/`pnpm run`/`yarn run`/`bun run` script references
+  in code spans and code blocks against the nearest `package.json`.
+
+### Fixed
+- Finish-line matching unwraps `timeout`, `nice`, `ionice`, `stdbuf`, `xargs`, `watch`,
+  `doas` and `find -exec`, so `timeout 60 git push` or `xargs git push` no longer
+  slip past a hook.
+- A program or subcommand decided at run time fails closed: `git $(echo push)` and
+  `git "$SUB"` match every `git` pattern. `g=git; $g push` and `"$(which git)" push`
+  resolve to `git push`.
+- A command segment that only assigns a variable (`FOO=1; ls`) no longer crashes
+  command analysis, which had made `gate` block harmless commands with an error.
+- `skillgate canonical` takes effect. `drift`, `diff-instructions` and
+  `instruction-sync` compare against the file it names, and `sync` seeds a missing
+  AGENTS.md from it.
+
 ## 0.14.0 - 2026-10-09
 
 ### Added
