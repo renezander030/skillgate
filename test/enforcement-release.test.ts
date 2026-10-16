@@ -174,6 +174,23 @@ test("gate timeout stays inside the host hook timeout even with a longer policy"
   assert.match(JSON.parse(result.stdout).result.failed[0].reason, /timed out/);
 });
 
+test("--timeout must be a positive integer for check and gate", t => {
+  const dir = project(t, { ".skillgate.json": JSON.stringify({ finishLine: ["git commit"], gates: [{ id: "ok", type: "command", run: `"${process.execPath}" -e ""` }] }) });
+  for (const value of ["0", "-5", "1.5", "abc"]) {
+    const check = sg(dir, ["check", "--timeout", value]);
+    assert.equal(check.status, 2);
+    assert.equal(check.stdout, "");
+    assert.equal(check.stderr, "skillgate: --timeout must be a positive integer in milliseconds\n");
+    const gate = sg(dir, ["gate", "--command", "git commit", "--timeout", value, "--json"]);
+    assert.equal(gate.status, 2);
+    assert.equal(JSON.parse(gate.stdout).reason, "error: --timeout must be a positive integer in milliseconds");
+    const lenient = sg(dir, ["gate", "--command", "git commit", "--timeout", value, "--allow-on-error", "--json"]);
+    assert.equal(lenient.status, 0);
+    assert.equal(JSON.parse(lenient.stdout).decision, "allow");
+  }
+  assert.equal(sg(dir, ["check", "--timeout", "5000"]).status, 0);
+});
+
 test("command and scanner cache requests always re-evaluate external state", t => {
   const dir = project(t, { ".skillgate.json": JSON.stringify({ gates: [{ id: "env", type: "command", run: `"${process.execPath}" -e "process.exit(process.env.SKILLGATE_FIXTURE_OK === 'yes' ? 0 : 1)"` }] }) });
   assert.equal(sg(dir, ["check", "--cache", "--json"], { SKILLGATE_FIXTURE_OK: "yes" }).status, 0);
