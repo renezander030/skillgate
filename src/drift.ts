@@ -38,7 +38,7 @@ export interface Source {
   linkTarget: string; // basename of symlink target, "" if not a symlink
 }
 
-export const STATUS = {
+const STATUS = {
   canonical: "canonical",
   inSync: "in sync",
   linked: "linked",
@@ -61,6 +61,11 @@ export interface DriftResult {
 }
 
 const GLOB_CHARS = /[*?{}[\]]/;
+
+/** Where a tool's own instruction file goes when it has none: its first literal (non-glob) pattern. */
+export function literalPath(spec: ToolSpec): string {
+  return spec.patterns.find((p) => !GLOB_CHARS.test(p))!;
+}
 
 /** Expand one pattern under cwd to existing regular-file paths (absolute). */
 function expandPattern(cwd: string, pattern: string): string[] {
@@ -127,7 +132,7 @@ export function discover(root: string): Source[] {
   return found;
 }
 
-export function missingTools(found: Source[]): string[] {
+function missingTools(found: Source[]): string[] {
   const present = new Set(found.map((s) => s.tool));
   return TOOL_SPECS.filter((s) => !present.has(s.name)).map((s) => s.name);
 }
@@ -159,17 +164,18 @@ export function pointsTo(lines: string[], canon: Source): boolean {
   return false;
 }
 
-function stripFrontmatter(content: string): string {
-  if (!content.startsWith("---\n")) return content;
+/** Leading YAML frontmatter block including its delimiters, or "". */
+export function frontmatterOf(content: string): string {
+  if (!content.startsWith("---\n")) return "";
   const rest = content.slice(4);
   const idx = rest.indexOf("\n---\n");
-  return idx >= 0 ? rest.slice(idx + 5) : content;
+  return idx >= 0 ? "---\n" + rest.slice(0, idx) + "\n---\n" : "";
 }
 
 /** Drop YAML frontmatter, trim lines, remove blanks and the generated link header. */
 export function normalize(content: string): string[] {
   const lines: string[] = [];
-  for (const l of stripFrontmatter(content).split("\n")) {
+  for (const l of content.slice(frontmatterOf(content).length).split("\n")) {
     const t = l.trim();
     if (t !== "" && t !== LINK_HEADER) lines.push(t);
   }
@@ -282,7 +288,22 @@ export const DEFAULT_THRESHOLD = 0.95;
 
 /** Discover instruction files under root, pick canonical, score every other tool. */
 export function checkDrift(root: string, threshold = DEFAULT_THRESHOLD): DriftResult {
+  return scoreDrift(root, discover(root), threshold).result;
+}
+
+/** `checkDrift`, plus a line diff against the canonical file for every drifted tool. */
+export function driftDiffs(root: string, threshold = DEFAULT_THRESHOLD): { result: DriftResult; diffs: { entry: DriftEntry; diff: string }[] } {
   const sources = discover(root);
+  const { result, canon } = scoreDrift(root, sources, threshold);
+  const diffs: { entry: DriftEntry; diff: string }[] = [];
+  for (const entry of result.entries) {
+    const src = sources.find((s) => s.tool === entry.tool);
+    if (entry.status === STATUS.drifted && src && canon) diffs.push({ entry, diff: formatDiff(canon.lines, src.lines) });
+  }
+  return { result, diffs };
+}
+
+function scoreDrift(root: string, sources: Source[], threshold: number): { result: DriftResult; canon?: Source } {
   const res: DriftResult = {
     root,
     canonical: "",
@@ -290,7 +311,7 @@ export function checkDrift(root: string, threshold = DEFAULT_THRESHOLD): DriftRe
     missing: missingTools(sources),
     drifted: 0,
   };
-  if (sources.length === 0) return res;
+  if (sources.length === 0) return { result: res };
 
   const canon = pickCanonical(sources);
   res.canonical = canon.files.join(", ");
@@ -320,5 +341,5 @@ export function checkDrift(root: string, threshold = DEFAULT_THRESHOLD): DriftRe
   // Stable order matching the registry.
   const order = new Map(TOOL_SPECS.map((s, i) => [s.name, i]));
   res.entries.sort((a, b) => (order.get(a.tool) ?? 0) - (order.get(b.tool) ?? 0));
-  return res;
+  return { result: res, canon };
 }

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { checkDrift, similarity, normalize } from "../src/drift.js";
+import { checkDrift, driftDiffs, similarity, normalize, LINK_HEADER } from "../src/drift.js";
 import { runSync } from "../src/link.js";
 import { runGates } from "../src/core.js";
 
@@ -80,4 +80,32 @@ test("similarity and normalize behave at the edges", () => {
   assert.equal(similarity([], []), 1);
   assert.equal(similarity(["a"], []), 0);
   assert.deepEqual(normalize("---\nx: 1\n---\n\n  hello  \n\n"), ["hello"]);
+});
+
+test("sync keeps a copy's frontmatter and creates tools at their literal path", () => {
+  const dir = tmpRepo({ "AGENTS.md": "# rules\nbe good\n", ".cursor/rules/main.mdc": "---\nalwaysApply: true\n---\nold body\n" });
+  runSync(dir, { create: ["windsurf", "cline"] });
+  assert.equal(
+    fs.readFileSync(path.join(dir, ".cursor/rules/main.mdc"), "utf8"),
+    "---\nalwaysApply: true\n---\n" + LINK_HEADER + "\n\n# rules\nbe good\n",
+  );
+  assert.ok(fs.existsSync(path.join(dir, ".windsurfrules")));
+  assert.ok(fs.existsSync(path.join(dir, ".clinerules")));
+  assert.equal(checkDrift(dir).drifted, 0);
+  assert.deepEqual(normalize("---\nx: 1\n---"), ["---", "x: 1", "---"]);
+});
+
+test("driftDiffs: one line diff per drifted tool, in registry order, against the canonical file", () => {
+  const dir = tmpRepo({
+    "AGENTS.md": "# rules\none\ntwo\nthree\n",
+    "GEMINI.md": "# rules\none\nfour\n",
+    "CLAUDE.md": "# rules\none\ntwo\nfive\n",
+    ".cursorrules": "# rules\none\ntwo\nthree\n",
+  });
+  const { result, diffs } = driftDiffs(dir);
+  assert.deepEqual(result, checkDrift(dir));
+  assert.deepEqual(diffs.map((d) => d.entry.tool), ["Claude Code", "Gemini CLI"]);
+  assert.match(diffs[0].diff, /^- three$/m);
+  assert.match(diffs[0].diff, /^\+ five$/m);
+  assert.deepEqual(driftDiffs(tmpRepo({})).diffs, []);
 });

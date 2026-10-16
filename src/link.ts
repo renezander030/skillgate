@@ -5,6 +5,8 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   discover,
+  frontmatterOf,
+  literalPath,
   pickCanonical,
   pointsTo,
   IMPORT_CAPABLE,
@@ -28,14 +30,6 @@ export interface SyncOptions {
 export interface SyncResult {
   lines: string[];
   changed: number;
-}
-
-/** Return leading YAML frontmatter block including delimiters, or "". */
-function frontmatterOf(content: string): string {
-  if (!content.startsWith("---\n")) return "";
-  const rest = content.slice(4);
-  const idx = rest.indexOf("\n---\n");
-  return idx >= 0 ? "---\n" + rest.slice(0, idx) + "\n---\n" : "";
 }
 
 /** Symlink target for AGENTS.md relative to the dir of `filePath`. */
@@ -120,7 +114,7 @@ export function runSync(root: string, opts: SyncOptions = {}): SyncResult {
       continue;
     }
     if (spec.name === "AGENTS.md" || sources.some((src) => src.tool === spec.name)) continue;
-    const rel = spec.patterns.find((p) => !/[*?{}[\]]/.test(p))!;
+    const rel = literalPath(spec);
     const filePath = path.join(root, rel.split("/").join(path.sep));
     const content = IMPORT_CAPABLE.has(spec.name) ? "@AGENTS.md\n" : LINK_HEADER + "\n\n" + canonContent;
     lines.push(`  + ${rel}  ${verb}created ${IMPORT_CAPABLE.has(spec.name) ? "as an @AGENTS.md pointer" : "as a synced copy"} for ${spec.name}`);

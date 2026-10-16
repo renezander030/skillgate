@@ -29,7 +29,7 @@ function escapeRegExp(s: string): string {
 }
 
 /** PEP 503 normalized project name. */
-export function normalizePythonName(name: string): string {
+function normalizePythonName(name: string): string {
   return name.toLowerCase().replace(/[-_.]+/g, "-");
 }
 
