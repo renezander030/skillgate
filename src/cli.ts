@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { findSpecPath, loadSpec, parseSpec, specRoot, workspaceRoot, DEFAULT_SPEC_PATHS, DEFAULT_PHASE_FILE, DEFAULT_RUN_TIMEOUT_MS, type Spec, type PhaseGate } from "./spec.js";
 import { runGates, decideCommand, decideTool, currentPhase, evaluatePhase, gatesForCommand, type GateResult, type RunResult } from "./core.js";
 import { appendLog, logPath, logPathProblem, summarizeLog, toFailed, type LogRecord } from "./log.js";
-import { checkDrift, driftDiffs, DEFAULT_THRESHOLD, CANONICAL_MARKER } from "./drift.js";
+import { checkDrift, driftDiffs, DEFAULT_THRESHOLD, setCanonical } from "./drift.js";
 import { runSync } from "./link.js";
 import { runScaffold, templateHelp } from "./scaffold.js";
 import { doctor, installIntegration, INTEGRATION_TARGETS, type IntegrationTarget } from "./integrations.js";
@@ -873,11 +873,8 @@ if (cmd === "canonical") {
     process.exit(2);
   }
   // drift, diff-instructions and instruction-sync compare every other file against it.
-  const markerPath = path.join(cwd, CANONICAL_MARKER);
-  fs.mkdirSync(path.dirname(markerPath), { recursive: true });
-  const relPath = path.relative(cwd, canonPath);
-  fs.writeFileSync(markerPath, relPath.split(path.sep).join("/") + "\n");
-  console.log(c(C.green, `✓ canonical instruction source set to ${relPath}`));
+  setCanonical(cwd, canonPath);
+  console.log(c(C.green, `✓ canonical instruction source set to ${path.relative(cwd, canonPath)}`));
   process.exit(0);
 }
 

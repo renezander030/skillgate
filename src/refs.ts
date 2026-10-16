@@ -114,6 +114,24 @@ function isRepoPath(root: string, fromDir: string, ref: InstructionRef): boolean
   return first !== ".." && exists(root, fromDir, first);
 }
 
+/**
+ * Whether one reference resolves: a path exists, or a script is in the nearest
+ * package.json. null when it is not judged (ignored, not a repository path, or a
+ * script with no package.json above the instruction file).
+ */
+function resolves(root: string, fromDir: string, ref: InstructionRef, ignore: string[]): boolean | null {
+  if (ref.kind === "script") {
+    const scripts = nearestScripts(root, fromDir);
+    const name = ref.ref.split(" ").pop()!;
+    if (!scripts || ignore.some((glob) => matchesGlob(ref.ref, glob) || matchesGlob(name, glob))) return null;
+    return Object.prototype.hasOwnProperty.call(scripts, name);
+  }
+  const normalized = path.posix.normalize(ref.ref.replace(/^\.\//, "")).replace(/\/$/, "");
+  if (ignore.some((glob) => matchesGlob(normalized, glob) || matchesGlob(ref.ref, glob))) return null;
+  if (!isRepoPath(root, fromDir, ref)) return null;
+  return exists(root, fromDir, ref.ref);
+}
+
 /** Check every reference in every discovered instruction file under `root`. */
 export function checkInstructionRefs(root: string, ignore: string[] = []): RefsResult {
   const files = [...new Set(discover(root).flatMap((source) => source.files))];
@@ -123,26 +141,14 @@ export function checkInstructionRefs(root: string, ignore: string[] = []): RefsR
     const full = path.resolve(root, file);
     const fromDir = path.dirname(full);
     for (const ref of extractRefs(fs.readFileSync(full, "utf8"), file)) {
-      if (ref.kind === "script") {
-        // Judged only against a package.json the instruction file sits under.
-        const scripts = nearestScripts(root, fromDir);
-        const name = ref.ref.split(" ").pop()!;
-        const key = `${file}\0${ref.ref}`;
-        if (!scripts || ignore.some((glob) => matchesGlob(ref.ref, glob) || matchesGlob(name, glob)) || seen.has(key)) continue;
-        seen.add(key);
-        result.checked++;
-        result.scripts!++;
-        if (!Object.prototype.hasOwnProperty.call(scripts, name)) result.missing.push(ref);
-        continue;
-      }
-      const normalized = path.posix.normalize(ref.ref.replace(/^\.\//, "")).replace(/\/$/, "");
-      if (ignore.some((glob) => matchesGlob(normalized, glob) || matchesGlob(ref.ref, glob))) continue;
-      if (!isRepoPath(root, fromDir, ref)) continue;
       const key = `${file}\0${ref.ref}`;
       if (seen.has(key)) continue;
+      const ok = resolves(root, fromDir, ref, ignore);
+      if (ok == null) continue;
       seen.add(key);
       result.checked++;
-      if (!exists(root, fromDir, ref.ref)) result.missing.push(ref);
+      if (ref.kind === "script") result.scripts!++;
+      if (!ok) result.missing.push(ref);
     }
   }
   return result;

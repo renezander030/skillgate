@@ -333,6 +333,11 @@ function checkTrivyGate(gate: TrivyGate, cwd: string, remainingMs?: number): Gat
 const NO_BASE_REASON = "no git base ref to diff against — pass --base <ref> or run in a repo with an upstream (fail-closed)";
 
 /** The first `n` items as a comma list, with an ellipsis when more were left out. */
+/** A commit as reasons show it: short sha, an optional note, then the quoted subject. */
+function commitLabel(commit: { sha: string; subject: string }, note?: string): string {
+  return `${commit.sha.slice(0, 12)}${note ? ` ${note}` : ""} "${commit.subject}"`;
+}
+
 function sample<T>(items: T[], n: number, show: (item: T) => string = String): string {
   return `${items.slice(0, n).map(show).join(", ")}${items.length > n ? " …" : ""}`;
 }
@@ -672,7 +677,7 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
           ? {
               ...base,
               ok: false,
-              reason: `${bad.length} of ${commits.length} commit(s) since ${short} not ${gate.trust === "verified" ? "verified" : "signed"}: ${sample(bad, 3, (c) => `${c.sha.slice(0, 12)} ${label(c.status)} "${c.subject}"`)}`,
+              reason: `${bad.length} of ${commits.length} commit(s) since ${short} not ${gate.trust === "verified" ? "verified" : "signed"}: ${sample(bad, 3, (c) => commitLabel(c, label(c.status)))}`,
             }
           : { ...base, ok: true, reason: `${commits.length} commit(s) since ${short} ${gate.trust === "verified" ? "verified" : "signed"}` };
       }
@@ -683,13 +688,13 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
         if (commits.length === 0) return { ...base, ok: true, reason: `no commits since ${short}` };
         const bad = commits.filter((commit) => !re.test(commit.subject));
         return bad.length
-          ? { ...base, ok: false, reason: `${bad.length} of ${commits.length} commit message(s) since ${short} do not match /${gate.pattern}/: ${sample(bad, 3, (c) => `${c.sha.slice(0, 12)} "${c.subject}"`)}` }
+          ? { ...base, ok: false, reason: `${bad.length} of ${commits.length} commit message(s) since ${short} do not match /${gate.pattern}/: ${sample(bad, 3, (c) => commitLabel(c))}` }
           : { ...base, ok: true, reason: `${commits.length} commit message(s) since ${short} match` };
       }
       case "pushed": {
         const { ref, commits } = unpushedCommits(cwd, gate.ref);
         return commits.length
-          ? { ...base, ok: false, reason: `${commits.length} commit(s) not on ${ref}: ${sample(commits, 3, (c) => `${c.sha.slice(0, 12)} "${c.subject}"`)} — push them` }
+          ? { ...base, ok: false, reason: `${commits.length} commit(s) not on ${ref}: ${sample(commits, 3, (c) => commitLabel(c))} — push them` }
           : { ...base, ok: true, reason: `every commit is on ${ref}` };
       }
       default:

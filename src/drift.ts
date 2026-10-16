@@ -144,7 +144,14 @@ function baseName(p: string): string {
 
 /** Prefer AGENTS.md (the cross-tool standard); else the freshest source. */
 /** Written by `skillgate canonical`: the instruction file the others must agree with. */
-export const CANONICAL_MARKER = ".skillgate/canonical-instructions.txt";
+const CANONICAL_MARKER = ".skillgate/canonical-instructions.txt";
+
+/** Name `file` (absolute) as the canonical instruction source of `root`. */
+export function setCanonical(root: string, file: string): void {
+  const marker = path.join(root, CANONICAL_MARKER);
+  fs.mkdirSync(path.dirname(marker), { recursive: true });
+  fs.writeFileSync(marker, path.relative(root, file).split(path.sep).join("/") + "\n");
+}
 
 /** The workspace-relative file the canonical marker names, or null. */
 function markedCanonical(root: string): string | null {

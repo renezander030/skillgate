@@ -269,21 +269,27 @@ export interface CommitSignature {
   subject: string;
 }
 
-/** Signature status of every commit reachable from HEAD but not from `ref`. Strict. */
-/** Subjects of the non-merge commits between `ref` and HEAD, newest first. */
-export function commitSubjects(cwd: string, ref: string): { sha: string; subject: string }[] {
+/**
+ * Commits HEAD has that `ref` lacks (all of HEAD for the empty tree), one array of
+ * `fields` (git log format codes) per commit, newest first. An unborn HEAD against
+ * the empty tree has none; any other failure throws.
+ */
+function commitsSince(cwd: string, ref: string, fields: string[], options: string[] = []): string[][] {
   const range = ref === EMPTY_TREE ? ["HEAD"] : [`${ref}..HEAD`];
   let out: string;
   try {
-    out = execFileSync("git", ["log", "-z", "--no-merges", "--format=%H%x1f%s", ...range, "--"], { cwd, ...GIT_OPTS });
+    out = execFileSync("git", ["log", "-z", ...options, `--format=${fields.join("%x1f")}`, ...range, "--"], { cwd, ...GIT_OPTS });
   } catch (error: any) {
+    // A repository whose HEAD is unborn has no commits to judge.
     if (ref === EMPTY_TREE && /does not have any commits|unknown revision|bad default revision/.test(String(error?.stderr ?? ""))) return [];
     throw new Error(`cannot read commits since ${baseLabel(ref)}`);
   }
-  return out.split("\0").filter(Boolean).map((record) => {
-    const [sha, subject] = record.replace(/^\n/, "").split("\x1f");
-    return { sha, subject: subject ?? "" };
-  });
+  return out.split("\0").filter(Boolean).map((record) => record.replace(/^\n/, "").split("\x1f"));
+}
+
+/** Subjects of the non-merge commits between `ref` and HEAD, newest first. */
+export function commitSubjects(cwd: string, ref: string): { sha: string; subject: string }[] {
+  return commitsSince(cwd, ref, ["%H", "%s"], ["--no-merges"]).map(([sha, subject]) => ({ sha, subject: subject ?? "" }));
 }
 
 /**
@@ -300,26 +306,11 @@ export function unpushedCommits(cwd: string, ref?: string): { ref: string; commi
     throw new Error(ref ? `cannot resolve ${ref}` : "the current branch has no upstream — push with -u or set ref");
   }
   const name = resolved.replace(/^refs\/remotes\//, "").replace(/^refs\/heads\//, "");
-  const out = execFileSync("git", ["log", "-z", "--format=%H%x1f%s", `${target}..HEAD`, "--"], { cwd, ...GIT_OPTS });
-  const commits = out.split("\0").filter(Boolean).map((record) => {
-    const [sha, subject] = record.replace(/^\n/, "").split("\x1f");
-    return { sha, subject: subject ?? "" };
-  });
+  const commits = commitsSince(cwd, target, ["%H", "%s"]).map(([sha, subject]) => ({ sha, subject: subject ?? "" }));
   return { ref: name, commits };
 }
 
+/** Signature status of every commit reachable from HEAD but not from `ref`. Strict. */
 export function commitSignatures(cwd: string, ref: string): CommitSignature[] {
-  const range = ref === EMPTY_TREE ? ["HEAD"] : [`${ref}..HEAD`];
-  let out: string;
-  try {
-    out = execFileSync("git", ["log", "-z", "--format=%H%x1f%G?%x1f%s", ...range, "--"], { cwd, ...GIT_OPTS });
-  } catch (error: any) {
-    // A repository whose HEAD is unborn has no commits to judge.
-    if (ref === EMPTY_TREE && /does not have any commits|unknown revision|bad default revision/.test(String(error?.stderr ?? ""))) return [];
-    throw new Error(`cannot read commits since ${baseLabel(ref)}`);
-  }
-  return out.split("\0").filter(Boolean).map((record) => {
-    const [sha, status, subject] = record.replace(/^\n/, "").split("\x1f");
-    return { sha, status, subject: subject ?? "" };
-  });
+  return commitsSince(cwd, ref, ["%H", "%G?", "%s"]).map(([sha, status, subject]) => ({ sha, status, subject: subject ?? "" }));
 }
