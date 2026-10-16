@@ -14,7 +14,7 @@ export interface InstallOptions {
 }
 
 /** Hook budget in seconds. Long enough for a test suite; a hook that times out fails open in most agents. */
-export const HOOK_TIMEOUT_SECONDS = 600;
+const HOOK_TIMEOUT_SECONDS = 600;
 export const GATE_TIMEOUT_MS = 540_000;
 const MARKER = "@reneza/skillgate@";
 /** Command hooks block when the gate cannot run; Stop hooks use a JSON fallback. */
@@ -57,7 +57,7 @@ export function gateCommand(extra = ""): string {
 }
 
 /** Regex source for a tool-name glob (`*` any run, `?` one character). */
-export function toolGlobToRegex(glob: string): string {
+function toolGlobToRegex(glob: string): string {
   return glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
 }
 

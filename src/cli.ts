@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { findSpecPath, loadSpec, parseSpec, specRoot, workspaceRoot, DEFAULT_SPEC_PATHS, DEFAULT_PHASE_FILE, DEFAULT_RUN_TIMEOUT_MS, type Spec, type PhaseGate } from "./spec.js";
 import { runGates, decideCommand, decideTool, currentPhase, evaluatePhase, gatesForCommand, type GateResult, type RunResult } from "./core.js";
 import { appendLog, logPath, logPathProblem, summarizeLog, toFailed, type LogRecord } from "./log.js";
-import { checkDrift, formatDiff, DEFAULT_THRESHOLD, discover, pickCanonical } from "./drift.js";
+import { checkDrift, driftDiffs, DEFAULT_THRESHOLD } from "./drift.js";
 import { runSync } from "./link.js";
 import { runScaffold, templateHelp } from "./scaffold.js";
 import { doctor, installIntegration, INTEGRATION_TARGETS, type IntegrationTarget } from "./integrations.js";
@@ -219,8 +219,7 @@ const cwd = cwdIdx >= 0 ? path.resolve(args[cwdIdx + 1]) : process.cwd();
 
 const updateAgents = args.includes("--update-agents");
 
-const baseIdx = args.indexOf("--base");
-const baseArg = baseIdx >= 0 ? args[baseIdx + 1] : undefined;
+const baseArg = option("--base");
 // Pinning is a deliberate opt-in and CLI/env-only — never a spec field, so a spec
 // can't grant itself immunity. `--pin` reads the spec from the base ref; `--base`
 // only names which ref (used for diff-aware gates too), it does not pin on its own.
@@ -326,6 +325,29 @@ function option(name: string): string | undefined {
   return index >= 0 ? args[index + 1] : undefined;
 }
 
+/** `--timeout <ms>` as the run budget override; throws unless it is a positive integer. */
+function timeoutOption(): number | undefined {
+  const value = option("--timeout");
+  if (value == null) return undefined;
+  const ms = Number(value);
+  if (!Number.isInteger(ms) || ms < 1) throw new Error("--timeout must be a positive integer in milliseconds");
+  return ms;
+}
+
+/** `--threshold <0..1>` for drift checks; a flag without a value is NaN, as given. */
+function thresholdOption(): number {
+  return args.includes("--threshold") ? Number(option("--threshold")) : DEFAULT_THRESHOLD;
+}
+
+/** Add each missing line to an ignore file, keeping what is there (created when absent). */
+function ensureIgnored(file: string, entries: string[]): void {
+  const old = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+  const missing = entries.filter((entry) => !old.split(/\r?\n/).includes(entry));
+  if (missing.length) fs.appendFileSync(file, (old && !old.endsWith("\n") ? "\n" : "") + missing.join("\n") + "\n");
+}
+
+const DEFAULT_ZK_PRIVATE_KEY = path.join(cwd, ".skillgate", "zk-private-key.json");
+
 function zkSpecPath(): string | null {
   return positionalPath() ?? findSpecPath(cwd);
 }
@@ -377,19 +399,11 @@ function githubAnnotations(result: RunResult, workspace: string): string[] {
 }
 
 if (cmd === "zk-keygen") {
-  const defaultPrivate = path.join(cwd, ".skillgate", "zk-private-key.json");
-  const privateFile = path.resolve(cwd, option("--private-key") ?? defaultPrivate);
+  const privateFile = path.resolve(cwd, option("--private-key") ?? DEFAULT_ZK_PRIVATE_KEY);
   const publicFile = path.resolve(cwd, option("--public-key") ?? path.join(cwd, ".skillgate", "zk-public-key.json"));
   try {
     const publicKey = await generateKeyFiles(privateFile, publicFile);
-    if (privateFile === defaultPrivate) {
-      const ignoreFile = path.join(cwd, ".skillgate", ".gitignore");
-      const ignoredName = "zk-private-key.json";
-      const old = fs.existsSync(ignoreFile) ? fs.readFileSync(ignoreFile, "utf8") : "";
-      if (!old.split(/\r?\n/).includes(ignoredName)) {
-        fs.writeFileSync(ignoreFile, old + (old && !old.endsWith("\n") ? "\n" : "") + ignoredName + "\n");
-      }
-    }
+    if (privateFile === DEFAULT_ZK_PRIVATE_KEY) ensureIgnored(path.join(cwd, ".skillgate", ".gitignore"), [path.basename(DEFAULT_ZK_PRIVATE_KEY)]);
     console.log(c(C.green, "✓ generated private-pass key pair"));
     console.log(`  key ID:  ${publicKey.key_id}`);
     console.log(`  private: ${privateFile} (keep secret; mode 0600)`);
@@ -412,7 +426,7 @@ if (cmd === "zk-policy-id") {
 
 if (cmd === "zk-prove") {
   const challenge = option("--challenge") ?? "";
-  const privateFile = path.resolve(cwd, option("--private-key") ?? path.join(cwd, ".skillgate", "zk-private-key.json"));
+  const privateFile = path.resolve(cwd, option("--private-key") ?? DEFAULT_ZK_PRIVATE_KEY);
   const outputFile = path.resolve(cwd, option("--out") ?? "skillgate-pass.proof.json");
   if (!challenge) die(2, "zk-prove requires a verifier-provided --challenge");
   try {
@@ -475,11 +489,7 @@ gates:
   if (preset) {
     const names = path.join(dir, "forbidden-names.json");
     if (!fs.existsSync(names)) fs.writeFileSync(names, "[]\n", { mode: 0o600 });
-    const ignorePath = path.join(cwd, ".gitignore");
-    const ignore = fs.existsSync(ignorePath) ? fs.readFileSync(ignorePath, "utf8") : "";
-    const entries = ["/.skillgate/forbidden-names.json", "/.skillgate/scan-cache/"];
-    const missing = entries.filter(entry => !ignore.split(/\r?\n/).includes(entry));
-    if (missing.length) fs.appendFileSync(ignorePath, (ignore && !ignore.endsWith("\n") ? "\n" : "") + missing.join("\n") + "\n");
+    ensureIgnored(path.join(cwd, ".gitignore"), ["/.skillgate/forbidden-names.json", "/.skillgate/scan-cache/"]);
   }
   fs.writeFileSync(target, preset ? secretsSpec : EXAMPLE);
   console.log(`wrote ${path.relative(cwd, target)} — edit it, then \`skillgate check\``);
@@ -640,8 +650,7 @@ if (cmd === "audit") {
     // Built-in defaults guess at globs; a default that matches nothing here is not a finding.
     result = runGates(loadSpec(specPath), usingDefaults ? cwd : specRoot(specPath), { allowEmptyGlobs: usingDefaults });
   } catch (e: any) {
-    console.error(c(C.red, `skillgate: ${e.message}`));
-    process.exit(2);
+    die(2, e.message);
   } finally {
     if (usingDefaults) {
       try { fs.unlinkSync(specPath); } catch { /* best effort */ }
@@ -697,9 +706,7 @@ if (cmd === "check") {
     const r = resolveSpecAndBase(specPath);
     pinnedTo = r.pinnedTo;
     workspace = r.workspace;
-    const timeoutArg = option("--timeout");
-    const timeoutMs = timeoutArg == null ? undefined : Number(timeoutArg);
-    if (timeoutArg != null && (!Number.isInteger(timeoutMs) || timeoutMs! < 1)) die(2, "--timeout must be a positive integer in milliseconds");
+    const timeoutMs = timeoutOption();
     cacheReason = args.includes("--cache") ? cacheDisabledReason(r.spec) : undefined;
     const cache = args.includes("--cache") && !cacheReason;
     const receipt = option("--receipt");
@@ -733,8 +740,7 @@ if (cmd === "check") {
       durationMs: result.durationMs,
     });
   } catch (e: any) {
-    console.error(c(C.red, `skillgate: ${e.message}`));
-    process.exit(2);
+    die(2, e.message);
   }
 
   if (json) {
@@ -763,9 +769,7 @@ if (cmd === "check") {
 }
 
 if (cmd === "drift") {
-  const tIdx = args.indexOf("--threshold");
-  const threshold = tIdx >= 0 ? Number(args[tIdx + 1]) : DEFAULT_THRESHOLD;
-  const res = checkDrift(cwd, threshold);
+  const res = checkDrift(cwd, thresholdOption());
 
   if (json) {
     console.log(JSON.stringify(res, null, 2));
@@ -804,22 +808,18 @@ if (cmd === "sync") {
 }
 
 if (cmd === "scaffold") {
-  const tIdx = args.indexOf("--template");
-  const template = tIdx >= 0 ? args[tIdx + 1] : "generic";
+  const template = option("--template") ?? "generic";
   try {
     const { lines } = runScaffold({ cwd, template, updateAgents });
     for (const l of lines) console.log(l);
     process.exit(0);
   } catch (e: any) {
-    console.error(c(C.red, `skillgate: ${e.message}`));
-    process.exit(2);
+    die(2, e.message);
   }
 }
 
 if (cmd === "diff-instructions") {
-  const tIdx = args.indexOf("--threshold");
-  const threshold = tIdx >= 0 ? Number(args[tIdx + 1]) : DEFAULT_THRESHOLD;
-  const res = checkDrift(cwd, threshold);
+  const { result: res, diffs } = driftDiffs(cwd, thresholdOption());
 
   if (res.entries.length === 0) {
     console.log("no agent instruction files found");
@@ -831,19 +831,12 @@ if (cmd === "diff-instructions") {
     process.exit(0);
   }
 
-  const sources = discover(cwd);
-  const canon = pickCanonical(sources);
-  const canonLabel = canon.files.join(", ");
-
-  for (const e of res.entries) {
-    if (e.status !== "drifted") continue;
-    const src = sources.find((s) => s.tool === e.tool);
-    if (!src) continue;
+  for (const { entry: e, diff } of diffs) {
     const pct = `${Math.round(e.similarity * 100)}%`;
-    console.log(`\n${c(C.bold, e.tool)} — ${pct} similarity with ${c(C.bold, canonLabel)}`);
+    console.log(`\n${c(C.bold, e.tool)} — ${pct} similarity with ${c(C.bold, res.canonical)}`);
     console.log(c(C.dim, e.files.join(", ")));
     console.log(c(C.dim, "─".repeat(50)));
-    console.log(formatDiff(canon.lines, src.lines));
+    console.log(diff);
   }
   process.exit(1);
 }
@@ -999,9 +992,7 @@ if (cmd === "gate") {
   try {
     const r = resolveSpecAndBase(specPath);
     logWorkspace = r.workspace;
-    const timeoutArg = option("--timeout");
-    const timeoutMs = timeoutArg == null ? undefined : Number(timeoutArg);
-    if (timeoutMs != null && (!Number.isInteger(timeoutMs) || timeoutMs < 1)) throw new Error("--timeout must be a positive integer in milliseconds");
+    const timeoutMs = timeoutOption();
     if (event === "stop") {
       if (isClean(r.workspace) === true) answer("allow", "no changes in the worktree — nothing to verify", [], { pinnedTo: r.pinnedTo });
       const result = runGates(r.spec, r.workspace, { baseRef: r.gateBase, timeoutMs });

@@ -405,6 +405,36 @@ test("diff-instructions: shows diff on drift", () => {
   assert.match(r.stdout, /do something else/);
 });
 
+test("drift and diff-instructions: --threshold sets the similarity counted as in sync", () => {
+  const dir = tmpProject({ "AGENTS.md": "# rules\none\ntwo\nthree\n", "CLAUDE.md": "# rules\none\ntwo\nfour\n" });
+  for (const command of ["drift", "diff-instructions"]) {
+    assert.equal(sg([command], dir).status, 1, command);
+    assert.equal(sg([command, "--threshold", "0.5"], dir).status, 0, command);
+    assert.equal(sg([command, "--threshold"], dir).status, 1, `${command} without a value`);
+  }
+  assert.equal(JSON.parse(sg(["drift", "--threshold", "0.5", "--json"], dir).stdout).drifted, 0);
+});
+
+test("scaffold: --template without a value uses the generic template", () => {
+  const dir = tmpProject({});
+  const r = sg(["scaffold", "--template"], dir);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /template: generic/);
+});
+
+test("zk-keygen and init --preset add ignore entries once, after a missing final newline", () => {
+  const dir = tmpProject({ ".skillgate/.gitignore": "cache", ".gitignore": "node_modules\n/.skillgate/scan-cache/" });
+  assert.equal(sg(["zk-keygen"], dir).status, 0);
+  assert.equal(fs.readFileSync(path.join(dir, ".skillgate", ".gitignore"), "utf8"), "cache\nzk-private-key.json\n");
+  assert.equal(sg(["zk-keygen", "--private-key", "other/key.json", "--public-key", "other/pub.json"], dir).status, 0);
+  assert.equal(fs.readFileSync(path.join(dir, ".skillgate", ".gitignore"), "utf8"), "cache\nzk-private-key.json\n");
+  assert.equal(sg(["init", "--preset", "no-secrets"], dir).status, 0);
+  assert.equal(fs.readFileSync(path.join(dir, ".gitignore"), "utf8"), "node_modules\n/.skillgate/scan-cache/\n/.skillgate/forbidden-names.json\n");
+  const fresh = tmpProject({});
+  assert.equal(sg(["init", "--preset", "no-secrets"], fresh).status, 0);
+  assert.equal(fs.readFileSync(path.join(fresh, ".gitignore"), "utf8"), "/.skillgate/forbidden-names.json\n/.skillgate/scan-cache/\n");
+});
+
 test("canonical: sets canonical marker file", () => {
   const dir = tmpProject({ "AGENTS.md": "# rules\nbe good\n" });
   const r = sg(["canonical", "AGENTS.md"], dir);

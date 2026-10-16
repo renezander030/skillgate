@@ -2,12 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
-import type { TrufflehogGate } from "./spec.js";
+import { DEFAULT_MAX_BYTES, type TrufflehogGate } from "./spec.js";
 
 export function checkSecrets(gate: TrufflehogGate, cwd: string, remainingMs?: number): { ok: boolean; reason: string } {
   const deadline = Date.now() + Math.min(gate.timeout ?? 10000, remainingMs ?? Infinity);
   const budget = () => Math.max(1, deadline - Date.now());
-  const maxBytes = gate.maxBytes ?? 10 * 1024 * 1024;
+  const maxBytes = gate.maxBytes ?? DEFAULT_MAX_BYTES;
   const run = (bin: string, args: string[]) => spawnSync(bin, args, {
     cwd, encoding: "utf8", timeout: budget(), maxBuffer: maxBytes,
   });
