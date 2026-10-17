@@ -492,7 +492,7 @@ Windows in CI.
 
 **Worktrunk:** Skillgate works unchanged in [Worktrunk](https://worktrunk.dev/hook/)
 worktrees. Track `.skillgate/done.yaml` and add
-`pre-merge = "npx --yes @reneza/skillgate@0.11.0 check --base '{{ target }}'"`
+`pre-merge = "npx --yes @reneza/skillgate@0.15.0 check --base '{{ target }}'"`
 to `.config/wt.toml`. Worktrunk runs this blocking hook in the source worktree
 after rebasing and aborts the merge on a nonzero exit. Skillgate discovers that
 worktree's policy and evaluates paths relative to it, including when called from
