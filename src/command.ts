@@ -29,9 +29,14 @@ const WRAPPER_OPTION_VALUES: Record<string, Set<string>> = {
 const FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
+/** A word without the grouping a shell puts around it: `(git`, `{ npm`, `push)`. */
+function ungrouped(word: string): string {
+  return word.replace(/^[({]+|[)}]+$/g, "");
+}
+
 function executableName(value: string): string {
   const portable = value.replace(/\\/g, "/");
-  const base = portable.slice(portable.lastIndexOf("/") + 1).toLowerCase().replace(/^[({]+|[)}]+$/g, "");
+  const base = ungrouped(portable.slice(portable.lastIndexOf("/") + 1).toLowerCase());
   return base.replace(/\.(exe|cmd|bat)$/i, "");
 }
 
@@ -142,7 +147,7 @@ function unwrap(tokens: string[]): string[] {
       // `timeout DURATION cmd`: the duration is the first operand.
       if (name === "timeout" && i < tokens.length) i++;
     } else if (name === "env") {
-      while (i < tokens.length && (tokens[i].startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]))) {
+      while (i < tokens.length && (tokens[i].startsWith("-") || ASSIGNMENT.test(tokens[i]))) {
         const option = tokens[i++];
         if (WRAPPER_OPTIONS_WITH_VALUES.has(option) && i < tokens.length) i++;
       }
@@ -188,7 +193,7 @@ function orderedMatch(tokens: string[], pattern: string[]): boolean {
     if (isDynamic(tokens[index]) && (index > 0 || pattern.length > 1)) return true;
     const actual = index === 0 ? executableName(tokens[index]) : tokens[index].toLowerCase();
     const expected = index === 0 ? executableName(wanted) : wanted.toLowerCase();
-    return actual.replace(/^[({]+|[)}]+$/g, "") === expected.replace(/^[({]+|[)}]+$/g, "");
+    return ungrouped(actual) === ungrouped(expected);
   });
 }
 

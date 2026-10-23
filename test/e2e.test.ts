@@ -410,16 +410,19 @@ test("drift and diff-instructions: --threshold sets the similarity counted as in
   for (const command of ["drift", "diff-instructions"]) {
     assert.equal(sg([command], dir).status, 1, command);
     assert.equal(sg([command, "--threshold", "0.5"], dir).status, 0, command);
-    assert.equal(sg([command, "--threshold"], dir).status, 1, `${command} without a value`);
+    const bare = sg([command, "--threshold"], dir);
+    assert.equal(bare.status, 2, `${command} without a value`);
+    assert.match(bare.stderr, /--threshold requires a value/);
   }
   assert.equal(JSON.parse(sg(["drift", "--threshold", "0.5", "--json"], dir).stdout).drifted, 0);
 });
 
-test("scaffold: --template without a value uses the generic template", () => {
+test("scaffold: --template without a value is a usage error and writes nothing", () => {
   const dir = tmpProject({});
   const r = sg(["scaffold", "--template"], dir);
-  assert.equal(r.status, 0);
-  assert.match(r.stdout, /template: generic/);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /--template requires a value/);
+  assert.equal(fs.existsSync(path.join(dir, ".skillgate", "evidence")), false);
 });
 
 test("zk-keygen and init --preset add ignore entries once, after a missing final newline", () => {

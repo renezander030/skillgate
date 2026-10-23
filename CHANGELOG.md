@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+## 0.16.0 - 2026-10-23
+
+### Added
+- `skillgate install codex --stop` and `skillgate install copilot-cli --stop` register
+  a Stop hook, so Codex and Copilot CLI agents cannot end a turn while gates fail.
+  Both accept the same `--format claude-stop` answer as Claude Code.
+- `copilot-cli` install target: `.github/hooks/skillgate.json` with a fail-closed
+  `PreToolUse` hook on `Bash` (plus `gatedTools`), read by GitHub Copilot CLI and its
+  cloud agent. `doctor copilot-cli` verifies it; `install all` includes it.
+- `doctor` reports a hook that is registered but switched off: `disableAllHooks` in
+  `.claude/settings.json` or `.claude/settings.local.json`, or `[features] hooks = false`
+  in `.codex/config.toml`.
+- `doctor` reports a hook, pre-commit entry or workflow pinned to another Skillgate
+  version than the one running, with the `install` command that fixes it.
+- `skillgate init --preset regression`: no test case or test file removed, no new
+  skipped or focused tests, CI workflows and agent instruction files unchanged versus
+  the base ref.
+- `check --format github` also writes a result table to `$GITHUB_STEP_SUMMARY`.
+- `skillgate <command> --help` and `skillgate help <command>` print that command's
+  usage and flags.
+
+### Changed
+- `skillgate install github-actions` upgrades an installed Skillgate workflow in
+  place: the package pin, the pinned checkout and setup-node actions, and a Node 18
+  or 20 line move to Node 22. New workflows use setup-node v7.1.0 and Node 22.
+
+### Fixed
+- `skillgate <command> --help` no longer runs the command: `scaffold --help` wrote
+  evidence templates, `zk-keygen --help` wrote a key pair and `check --help` ran
+  every gate.
+- A flag that takes a value and is given none (`--cwd` last, `--receipt --json`) is a
+  usage error with exit 2. `--cwd` crashed with a stack trace, and `--receipt --json`
+  wrote a receipt named `--json`. A bare `--template` or `--threshold` is now an
+  error too, instead of the generic template or a NaN threshold.
+
 ## 0.15.0 - 2026-10-16
 
 ### Added

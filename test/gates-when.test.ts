@@ -250,3 +250,16 @@ test("a repository with history never falls back to the empty tree", (t) => {
   git(dir, ["checkout", "-q", "--orphan", "fresh"]);
   assert.equal(resolveBaseRef(dir), "main");
 });
+
+test("every glob gate shares one empty-glob rule: fail as a no-op unless allowEmpty or the run waives it", () => {
+  const { dir, base } = gitProject({ "package.json": "{}", "src/a.ts": "ok\n" });
+  const types = ["absent", "no-new", "no-fewer", "no-deleted", "unchanged", "deps-declared"] as const;
+  const gate = (type: (typeof types)[number], extra: object = {}) =>
+    ({ id: type, type, glob: "scr/**/*.ts", ...(type === "absent" || type.startsWith("no-n") || type === "no-fewer" ? { pattern: "TODO" } : {}), ...extra }) as any;
+  const failing = runGates({ gates: types.map((t) => gate(t)) }, dir, { baseRef: base });
+  assert.deepEqual(failing.failed.map((f) => [f.id, f.reason]), types.map((t) => [t, "glob scr/**/*.ts matches no files — the gate would pass as a no-op (fix the glob or set allowEmpty: true)"]));
+  const allowed = runGates({ gates: types.map((t) => gate(t, { allowEmpty: true })) }, dir, { baseRef: base });
+  const waived = runGates({ gates: types.map((t) => gate(t)) }, dir, { baseRef: base, allowEmptyGlobs: true });
+  assert.deepEqual(allowed.results.map((r) => r.reason), waived.results.map((r) => r.reason));
+  assert.equal(allowed.passed && waived.passed, true);
+});

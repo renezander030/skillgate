@@ -8,6 +8,7 @@ import {
   type GateWhen,
   type PhaseGate,
   type TrivyGate,
+  type GlobOptions,
   type CommandGate,
   INSTRUCTION_TOOL_IDS,
   toolId,
@@ -227,8 +228,22 @@ class Scanner {
   }
 }
 
-function noOpReason(glob: string): string {
-  return `glob ${glob} matches no files — the gate would pass as a no-op (fix the glob or set allowEmpty: true)`;
+/**
+ * A glob gate whose glob matches nothing fails, since a typo'd glob would otherwise pass
+ * forever as a no-op. The gate's `allowEmpty` or the run's `allowEmptyGlobs` (the audit's
+ * guessed defaults) waives that; then the gate goes on to judge the empty set.
+ */
+function emptyGlobFails(gate: GlobOptions, opts: RunOptions): boolean {
+  return !gate.allowEmpty && !opts.allowEmptyGlobs;
+}
+
+function noOp(base: { id: string; type: string }, glob: string): GateResult {
+  return { ...base, ok: false, reason: `glob ${glob} matches no files — the gate would pass as a no-op (fix the glob or set allowEmpty: true)` };
+}
+
+/** What a failure reason quotes of a command's output: its last `lines` lines (stderr, else stdout) on one line. */
+function outputTail(output: { stderr?: unknown; stdout?: unknown }, lines: number): string {
+  return String(output.stderr || output.stdout || "").trim().split("\n").slice(-lines).join(" ");
 }
 
 function formatTrivyCommand(bin: string, args: string[]): string {
@@ -251,11 +266,7 @@ function runTrivyCommand(bin: string, args: string[], cwd: string, timeout: numb
   }
   if (result.signal === "SIGTERM") return { ok: false, reason: `command timed out after ${timeout}ms: ${command}` };
   if ((result.status ?? 1) !== 0) {
-    const tail = String(result.stderr || result.stdout || "")
-      .trim()
-      .split("\n")
-      .slice(-3)
-      .join(" ");
+    const tail = outputTail(result, 3);
     return { ok: false, reason: `${command} failed${tail ? `: ${tail}` : ""}` };
   }
   return { ok: true, stdout: String(result.stdout || "") };
@@ -332,12 +343,12 @@ function checkTrivyGate(gate: TrivyGate, cwd: string, remainingMs?: number): Gat
 /** Every diff gate fails closed without a base: nothing to compare against is never a pass. */
 const NO_BASE_REASON = "no git base ref to diff against — pass --base <ref> or run in a repo with an upstream (fail-closed)";
 
-/** The first `n` items as a comma list, with an ellipsis when more were left out. */
 /** A commit as reasons show it: short sha, an optional note, then the quoted subject. */
 function commitLabel(commit: { sha: string; subject: string }, note?: string): string {
   return `${commit.sha.slice(0, 12)}${note ? ` ${note}` : ""} "${commit.subject}"`;
 }
 
+/** The first `n` items as a comma list, with an ellipsis when more were left out. */
 function sample<T>(items: T[], n: number, show: (item: T) => string = String): string {
   return `${items.slice(0, n).map(show).join(", ")}${items.length > n ? " …" : ""}`;
 }
@@ -369,7 +380,7 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
       case "absent": {
         const re = new RegExp(gate.pattern, (gate.flags ?? "").replace(/[gy]/g, ""));
         const files = scanFiles(cwd, gate.glob, gate.ignore);
-        if (files.length === 0 && !gate.allowEmpty && !opts.allowEmptyGlobs) return { ...base, ok: false, reason: noOpReason(gate.glob) };
+        if (files.length === 0 && emptyGlobFails(gate, opts)) return noOp(base, gate.glob);
         const scan = new Scanner(gate.maxBytes, opts.remainingMs);
         for (const f of files) {
           const text = scan.file(cwd, f, files.length);
@@ -396,11 +407,7 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
         if (result.outputLimited) return { ...base, ok: false, reason: "command exceeded output limit" };
         if (result.error) return { ...base, ok: false, reason: `\`${gate.run}\` failed: ${result.error.message}` };
         if (result.status === 0) return { ...base, ok: true, reason: `\`${gate.run}\` exited 0` };
-        const tail = String(result.stderr || result.stdout || "")
-          .trim()
-          .split("\n")
-          .slice(-2)
-          .join(" ");
+        const tail = outputTail(result, 2);
         return { ...base, ok: false, reason: `\`${gate.run}\` failed${tail ? `: ${tail}` : ` with exit ${result.status ?? 1}`}` };
       }
       case "trivy":
@@ -482,7 +489,7 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
         const workFiles = scanFiles(cwd, gate.glob, ignore);
         const baseFiles = listFilesAtRef(cwd, diffBase, true).filter((p) => inScan(p, gate.glob, ignore));
         const union = [...new Set<string>([...workFiles, ...baseFiles])];
-        if (union.length === 0 && !gate.allowEmpty && !opts.allowEmptyGlobs) return { ...base, ok: false, reason: noOpReason(gate.glob) };
+        if (union.length === 0 && emptyGlobFails(gate, opts)) return noOp(base, gate.glob);
         const scan = new Scanner(gate.maxBytes, opts.remainingMs);
         let baseCount = 0;
         let workCount = 0;
@@ -523,9 +530,9 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
       case "no-deleted": {
         const ignore = gate.ignore ?? [];
         const baseFiles = listFilesAtRef(cwd, diffBase, true).filter((p) => matchesGlob(p, gate.glob, ignore));
-        if (baseFiles.length === 0 && !gate.allowEmpty && !opts.allowEmptyGlobs) {
+        if (baseFiles.length === 0 && emptyGlobFails(gate, opts)) {
           const workFiles = scanFiles(cwd, gate.glob, ignore);
-          if (workFiles.length === 0) return { ...base, ok: false, reason: noOpReason(gate.glob) };
+          if (workFiles.length === 0) return noOp(base, gate.glob);
         }
         const missing = baseFiles.filter((f) => !fs.existsSync(path.resolve(cwd, f)));
         const short = baseLabel(diffBase);
@@ -595,9 +602,9 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
         const ignore = gate.ignore ?? [];
         const baseline = [...blobsAtRef(cwd, diffBase)].filter(([p]) => inScan(p, gate.glob, ignore));
         const short = baseLabel(diffBase);
-        if (baseline.length === 0 && !gate.allowEmpty && !opts.allowEmptyGlobs) {
+        if (baseline.length === 0 && emptyGlobFails(gate, opts)) {
           const workFiles = scanFiles(cwd, gate.glob, ignore);
-          if (workFiles.length === 0) return { ...base, ok: false, reason: noOpReason(gate.glob) };
+          if (workFiles.length === 0) return noOp(base, gate.glob);
           return { ...base, ok: true, reason: `no ${gate.glob} files at ${short} to protect (${workFiles.length} new)` };
         }
         const deleted = new Set<string>();
@@ -637,7 +644,7 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
       case "deps-declared": {
         const ignore = gate.ignore ?? [];
         const files = scanFiles(cwd, gate.glob, ignore).sort();
-        if (files.length === 0 && !gate.allowEmpty && !opts.allowEmptyGlobs) return { ...base, ok: false, reason: noOpReason(gate.glob) };
+        if (files.length === 0 && emptyGlobFails(gate, opts)) return noOp(base, gate.glob);
         const scan = new Scanner(gate.maxBytes, opts.remainingMs);
         const manifests = new Map<string, ReturnType<typeof nearestManifest>>();
         const root = path.resolve(cwd);
@@ -767,16 +774,7 @@ export function isGatedTool(tool: string, patterns: string[] | undefined): boole
 /** The verdict for an agent tool call (an MCP tool, say): gated tools are blocked until every applicable gate passes. */
 export function decideTool(spec: Spec, cwd: string, tool: string, opts: RunOptions = {}): Decision {
   if (!isGatedTool(tool, spec.gatedTools)) return { decision: "allow", reason: "not a gated tool", command: tool };
-  const result = runGates(spec, cwd, { ...opts, tool, command: undefined });
-  const applied = result.results.filter((r) => r.status !== "skipped").length;
-  return result.passed
-    ? { decision: "allow", reason: `all ${applied} applicable gates passed`, command: tool, result }
-    : {
-        decision: "block",
-        reason: `${result.failed.length} of ${applied} gates unmet: ${result.failed.map((f) => f.id).join(", ")}`,
-        command: tool,
-        result,
-      };
+  return verdict(tool, runGates(spec, cwd, { ...opts, tool, command: undefined }), "applied");
 }
 
 /** True when `command` crosses one of the configured finish-line patterns. */
@@ -792,6 +790,18 @@ export interface Decision {
 }
 
 /**
+ * The verdict on a judged action once its gates ran: allow when every applicable gate
+ * passed. A block reason counts `of` the gates: all of them for a command, only the
+ * applied ones for a tool call.
+ */
+function verdict(command: string, result: RunResult, of: "all" | "applied"): Decision {
+  const applied = result.results.filter((r) => r.status !== "skipped").length;
+  if (result.passed) return { decision: "allow", reason: `all ${applied} applicable gates passed`, command, result };
+  const total = of === "all" ? result.results.length : applied;
+  return { decision: "block", reason: `${result.failed.length} of ${total} gates unmet: ${result.failed.map((f) => f.id).join(", ")}`, command, result };
+}
+
+/**
  * The harness-neutral verdict: given a command an agent is about to run, decide
  * whether to let it through. Any tool — a Claude Code hook, a Cursor/Codex
  * wrapper, a git hook, a bare shell — can call this and read the same answer, so
@@ -803,16 +813,7 @@ export function decideCommand(spec: Spec, cwd: string, command: string, opts: Ru
   if (!isFinishLine(command, spec.finishLine)) {
     return { decision: "allow", reason: "not a finish-line command", command };
   }
-  const result = runGates(spec, cwd, { ...opts, command });
-  const applied = result.results.filter((r) => r.status !== "skipped").length;
-  return result.passed
-    ? { decision: "allow", reason: `all ${applied} applicable gates passed`, command, result }
-    : {
-        decision: "block",
-        reason: `${result.failed.length} of ${result.results.length} gates unmet: ${result.failed.map((f) => f.id).join(", ")}`,
-        command,
-        result,
-      };
+  return verdict(command, runGates(spec, cwd, { ...opts, command }), "all");
 }
 
 /**

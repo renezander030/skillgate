@@ -9,13 +9,11 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { runGates, decideCommand } from "../src/core.js";
 import {
-  globToRegExp,
   matchesGlob,
   resolveBaseRef,
   mergeBase,
   readFileAtRef,
   listFilesAtRef,
-  gitAvailable,
   repoRelativePath,
   repoRoot,
 } from "../src/git.js";
@@ -47,17 +45,17 @@ function write(dir: string, files: Record<string, string>): void {
   }
 }
 
-// ---- globToRegExp / matchesGlob ---------------------------------------------
+// ---- matchesGlob ---------------------------------------------
 
-test("globToRegExp: **, *, ?, and {a,b} alternation", () => {
-  assert.ok(globToRegExp("**/*.test.ts").test("test/deep/a.test.ts"));
-  assert.ok(globToRegExp("**/*.ts").test("a.ts")); // ** collapses at root
-  assert.ok(globToRegExp("src/*.ts").test("src/a.ts"));
-  assert.ok(!globToRegExp("src/*.ts").test("src/deep/a.ts")); // * stops at /
-  assert.ok(globToRegExp("src/**/*.{ts,js}").test("src/x/y.js"));
-  assert.ok(!globToRegExp("src/**/*.{ts,js}").test("src/x/y.py"));
-  assert.ok(globToRegExp("a?c.ts").test("abc.ts"));
-  assert.ok(!globToRegExp("a?c.ts").test("a/c.ts"));
+test("matchesGlob: **, *, ?, and {a,b} alternation", () => {
+  assert.ok(matchesGlob("test/deep/a.test.ts", "**/*.test.ts"));
+  assert.ok(matchesGlob("a.ts", "**/*.ts")); // ** collapses at root
+  assert.ok(matchesGlob("src/a.ts", "src/*.ts"));
+  assert.ok(!matchesGlob("src/deep/a.ts", "src/*.ts")); // * stops at /
+  assert.ok(matchesGlob("src/x/y.js", "src/**/*.{ts,js}"));
+  assert.ok(!matchesGlob("src/x/y.py", "src/**/*.{ts,js}"));
+  assert.ok(matchesGlob("abc.ts", "a?c.ts"));
+  assert.ok(!matchesGlob("a/c.ts", "a?c.ts"));
 });
 
 test("matchesGlob: honours ignore globs", () => {
@@ -67,9 +65,8 @@ test("matchesGlob: honours ignore globs", () => {
 
 // ---- git plumbing ------------------------------------------------------------
 
-test("git plumbing: availability, root, read + list at a ref", () => {
+test("git plumbing: root, read + list at a ref", () => {
   const dir = gitProject({ "src/a.ts": "export const a = 1\n", "README.md": "hi\n" });
-  assert.equal(gitAvailable(dir), true);
   assert.equal(path.basename(repoRoot(dir)!), path.basename(dir));
   assert.equal(repoRelativePath(dir, path.join(dir, "src", "a.ts")), "src/a.ts");
   assert.equal(readFileAtRef(dir, "HEAD", "src/a.ts"), "export const a = 1\n");
@@ -80,7 +77,6 @@ test("git plumbing: availability, root, read + list at a ref", () => {
 
 test("git plumbing: non-repo dir is safely empty, never throws", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "skillgate-nogit-"));
-  assert.equal(gitAvailable(dir), false);
   assert.equal(repoRoot(dir), null);
   assert.equal(resolveBaseRef(dir), null);
   assert.equal(readFileAtRef(dir, "HEAD", "x"), null);
