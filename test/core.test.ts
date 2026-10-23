@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { runGates, isFinishLine } from "../src/core.js";
+import { runGates, isFinishLine, decideCommand, decideTool } from "../src/core.js";
 import type { Spec } from "../src/spec.js";
 
 function tmpProject(files: Record<string, string>): string {
@@ -231,4 +231,37 @@ test("every diff gate fails closed with the same reason when no base ref resolve
     assert.equal(r.reason, "no git base ref to diff against — pass --base <ref> or run in a repo with an upstream (fail-closed)");
     assert.equal(r.status, "fail");
   }
+});
+
+test("decideCommand and decideTool: verdict reasons, each with its own block denominator", () => {
+  const dir = tmpProject({ "README.md": "hi" });
+  const spec: Spec = {
+    finishLine: ["git commit"],
+    gatedTools: ["mcp__shop__*"],
+    gates: [
+      { id: "readme", type: "file-exists", file: "README.md" },
+      { id: "license", type: "file-exists", file: "LICENSE" },
+      { id: "push-only", type: "file-exists", file: "README.md", when: { command: ["git push"] } },
+    ],
+  };
+  assert.deepEqual(
+    [decideCommand(spec, dir, "ls").reason, decideTool(spec, dir, "mcp__docs__read").reason],
+    ["not a finish-line command", "not a gated tool"],
+  );
+  // A command block counts every gate; a tool block counts the gates that applied.
+  assert.equal(decideCommand(spec, dir, "git commit -m x").reason, "1 of 3 gates unmet: license");
+  assert.equal(decideTool(spec, dir, "mcp__shop__publish").reason, "1 of 2 gates unmet: license");
+  fs.writeFileSync(path.join(dir, "LICENSE"), "MIT");
+  const allowed = [decideCommand(spec, dir, "git commit -m x"), decideTool(spec, dir, "mcp__shop__publish")];
+  assert.deepEqual(allowed.map((d) => [d.decision, d.reason, d.command]), [
+    ["allow", "all 2 applicable gates passed", "git commit -m x"],
+    ["allow", "all 2 applicable gates passed", "mcp__shop__publish"],
+  ]);
+});
+
+test("command gate failure quotes the last two lines of stderr, else stdout", () => {
+  const dir = tmpProject({ "fail.cjs": "console.log('out1\\nout2\\nout3'); if (process.argv[2]) console.error('e1\\ne2\\ne3'); process.exit(3);\n" });
+  const run = (arg: string) => runGates({ gates: [{ id: "c", type: "command", run: `node fail.cjs ${arg}` }] }, dir).results[0].reason;
+  assert.equal(run("err"), "`node fail.cjs err` failed: e2 e3");
+  assert.equal(run(""), "`node fail.cjs ` failed: out2 out3");
 });

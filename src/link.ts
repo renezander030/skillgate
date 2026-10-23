@@ -94,9 +94,9 @@ export function runSync(root: string, opts: SyncOptions = {}): SyncResult {
       }
     } else if (IMPORT_CAPABLE.has(src.tool)) {
       lines.push(`  ~ ${label}  ${verb}replaced with @AGENTS.md pointer`);
-      if (!dryRun) fs.writeFileSync(filePath, "@AGENTS.md\n");
+      if (!dryRun) fs.writeFileSync(filePath, linkedContent(src.tool, canonContent));
     } else {
-      const desired = frontmatterOf(src.content) + LINK_HEADER + "\n\n" + canonContent;
+      const desired = linkedContent(src.tool, canonContent, frontmatterOf(src.content));
       if (src.content === desired) {
         lines.push(`  · ${label}  already in sync`);
         continue;
@@ -116,7 +116,7 @@ export function runSync(root: string, opts: SyncOptions = {}): SyncResult {
     if (spec.name === "AGENTS.md" || sources.some((src) => src.tool === spec.name)) continue;
     const rel = literalPath(spec);
     const filePath = path.join(root, rel.split("/").join(path.sep));
-    const content = IMPORT_CAPABLE.has(spec.name) ? "@AGENTS.md\n" : LINK_HEADER + "\n\n" + canonContent;
+    const content = linkedContent(spec.name, canonContent);
     lines.push(`  + ${rel}  ${verb}created ${IMPORT_CAPABLE.has(spec.name) ? "as an @AGENTS.md pointer" : "as a synced copy"} for ${spec.name}`);
     if (!dryRun) {
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -127,4 +127,13 @@ export function runSync(root: string, opts: SyncOptions = {}): SyncResult {
 
   lines.push(`\n${changed} instruction files ${verb}linked to AGENTS.md`);
   return { lines, changed };
+}
+
+/**
+ * What a tool's instruction file holds once linked to AGENTS.md: an `@AGENTS.md`
+ * pointer for tools that import, else a synced copy under LINK_HEADER that keeps the
+ * file's own frontmatter.
+ */
+function linkedContent(tool: string, canonContent: string, frontmatter = ""): string {
+  return IMPORT_CAPABLE.has(tool) ? "@AGENTS.md\n" : frontmatter + LINK_HEADER + "\n\n" + canonContent;
 }

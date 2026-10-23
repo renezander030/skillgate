@@ -26,73 +26,61 @@ interface TemplateConfig {
   evidenceFiles: Record<string, string>;
 }
 
-const TEMPLATES: Record<string, TemplateConfig> = {
-  generic: {
-    name: "generic",
-    description: "General-purpose evidence workflow",
-    evidenceFiles: {
-      "test-output.txt": `# Test Output
+// Evidence file bodies shared by more than one Node template.
+const NPM_TEST_OUTPUT = `# Test Output
 # Save the output of your test runner here before committing.
 # Example: npm test --silent > .skillgate/evidence/test-output.txt
-`,
-      "lint-report.txt": `# Lint Report
+`;
+const NPM_LINT_REPORT = `# Lint Report
 # Save the output of your linter here before committing.
 # Example: npm run lint > .skillgate/evidence/lint-report.txt
-`,
-      "diff-review.md": `# Self-Review of Changes
+`;
+const TSC_OUTPUT = `# TypeScript Typecheck Output
+# Save the output of tsc --noEmit here before committing.
+# Example: tsc --noEmit > .skillgate/evidence/typecheck-output.txt 2>&1
+`;
+const DIFF_REVIEW = `# Self-Review of Changes
 # Write a brief review of your own changes before committing. Answer:
 # 1. What did this change accomplish?
 # 2. Which files did it touch and why?
 # 3. Are there any side effects or regressions to consider?
 # 4. What was tested and how?
-`,
+`;
+
+const TEMPLATES: Record<string, TemplateConfig> = {
+  generic: {
+    name: "generic",
+    description: "General-purpose evidence workflow",
+    evidenceFiles: {
+      "test-output.txt": NPM_TEST_OUTPUT,
+      "lint-report.txt": NPM_LINT_REPORT,
+      "diff-review.md": DIFF_REVIEW,
     },
   },
   "ts-lib": {
     name: "ts-lib",
     description: "TypeScript library — typecheck, test, lint, coverage",
     evidenceFiles: {
-      "typecheck-output.txt": `# TypeScript Typecheck Output
-# Save the output of tsc --noEmit here before committing.
-# Example: tsc --noEmit > .skillgate/evidence/typecheck-output.txt 2>&1
-`,
-      "test-output.txt": `# Test Output
-# Save the output of your test runner here before committing.
-# Example: npm test --silent > .skillgate/evidence/test-output.txt
-`,
-      "lint-report.txt": `# Lint Report
-# Save the output of your linter here before committing.
-# Example: npm run lint > .skillgate/evidence/lint-report.txt
-`,
+      "typecheck-output.txt": TSC_OUTPUT,
+      "test-output.txt": NPM_TEST_OUTPUT,
+      "lint-report.txt": NPM_LINT_REPORT,
       "coverage-summary.txt": `# Coverage Summary
 # Save the coverage summary here before committing.
 # Example: npm run test:coverage > .skillgate/evidence/coverage-summary.txt
 `,
-      "diff-review.md": `# Self-Review of Changes
-# Write a brief review of your own changes before committing. Answer:
-# 1. What did this change accomplish?
-# 2. Which files did it touch and why?
-# 3. Are there any side effects or regressions to consider?
-# 4. What was tested and how?
-`,
+      "diff-review.md": DIFF_REVIEW,
     },
   },
   react: {
     name: "react",
     description: "React / Next.js application",
     evidenceFiles: {
-      "typecheck-output.txt": `# TypeScript Typecheck Output
-# Save the output of tsc --noEmit here before committing.
-# Example: tsc --noEmit > .skillgate/evidence/typecheck-output.txt 2>&1
-`,
+      "typecheck-output.txt": TSC_OUTPUT,
       "lint-report.txt": `# ESLint Output
 # Save the output of eslint here before committing.
 # Example: eslint . --max-warnings=0 > .skillgate/evidence/lint-report.txt 2>&1
 `,
-      "test-output.txt": `# Test Output
-# Save the output of your test runner here before committing.
-# Example: npm test --silent > .skillgate/evidence/test-output.txt
-`,
+      "test-output.txt": NPM_TEST_OUTPUT,
       "diff-review.md": `# Self-Review of Changes
 # Write a brief review of your own changes before committing. Answer:
 # 1. What did this change accomplish?
@@ -167,7 +155,10 @@ caught, the evidence files tell you whether the agent ran the check at all.
 This is not about punishing the agent — it is about knowing what happened.
 `;
 
-const AGENTS_PREAMBLE = `# Agent instructions for skillgate evidence workflow
+/** The preamble's title phrase; a file that contains it already has the instructions. */
+const PREAMBLE_MARKER = "skillgate evidence workflow";
+
+const AGENTS_PREAMBLE = `# Agent instructions for ${PREAMBLE_MARKER}
 
 ## Before any commit, push, or publish:
 
@@ -258,7 +249,7 @@ export function runScaffold(opts: ScaffoldOptions): ScaffoldResult {
 
     if (fs.existsSync(targetPath)) {
       const current = fs.readFileSync(targetPath, "utf8");
-      if (!current.includes("skillgate evidence workflow")) {
+      if (!current.includes(PREAMBLE_MARKER)) {
         const updated = current.trimEnd() + "\n\n" + AGENTS_PREAMBLE;
         fs.writeFileSync(targetPath, updated);
         lines.push(`  + ${path.basename(targetPath)}  updated with evidence workflow instructions`);

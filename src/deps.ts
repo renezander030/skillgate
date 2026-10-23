@@ -22,6 +22,7 @@ export interface DepsReport {
   error?: string;
 }
 
+/** package.json sections whose packages must be installed. Peer dependencies are the consumer's to install, so they are not checked. */
 const NODE_SECTIONS = ["dependencies", "devDependencies", "optionalDependencies"];
 
 function escapeRegExp(s: string): string {
@@ -36,8 +37,7 @@ function normalizePythonName(name: string): string {
 function nodeDeclared(manifest: string): string[] {
   const pkg = JSON.parse(fs.readFileSync(manifest, "utf8"));
   const names = new Set<string>();
-  // Peer dependencies are the consumer's to install, so they are not checked.
-  for (const section of ["dependencies", "devDependencies", "optionalDependencies"]) {
+  for (const section of NODE_SECTIONS) {
     const deps = pkg?.[section];
     if (!deps || typeof deps !== "object") continue;
     for (const [name, spec] of Object.entries(deps)) {

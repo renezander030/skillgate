@@ -16,7 +16,14 @@ export interface InstallOptions {
 /** Hook budget in seconds. Long enough for a test suite; a hook that times out fails open in most agents. */
 const HOOK_TIMEOUT_SECONDS = 600;
 export const GATE_TIMEOUT_MS = 540_000;
-const MARKER = "@reneza/skillgate@";
+/** The npm package every installed hook, plugin entry and workflow names; the doctor looks for it. */
+const PACKAGE = "@reneza/skillgate";
+/** A versioned reference to the package (`@reneza/skillgate@<version>`) marks this package's hook entries. */
+const MARKER = `${PACKAGE}@`;
+/** The hook's own gate budget, below the agent's hook timeout so the gate answers first. */
+const TIMEOUT_FLAG = `--timeout ${GATE_TIMEOUT_MS}`;
+/** Claude Code's Stop hook protocol. */
+const STOP_FORMAT = "--format claude-stop";
 /** Command hooks block when the gate cannot run; Stop hooks use a JSON fallback. */
 const FAIL_CLOSED = " || exit 2";
 const STOP_FAIL_CLOSED = ` || node -e "console.log(JSON.stringify({decision:'block',reason:'Skillgate could not run; restore the gate before finishing.'}))"`;
@@ -39,7 +46,7 @@ function writeJson(file: string, value: unknown): void {
 }
 
 function packageRef(): string {
-  return `@reneza/skillgate@${EVALUATOR_VERSION}`;
+  return `${MARKER}${EVALUATOR_VERSION}`;
 }
 
 function readJson(file: string): any {
@@ -53,7 +60,7 @@ function readJson(file: string): any {
 
 /** The shell command an agent hook runs, with the protocol's blocking fallback. */
 export function gateCommand(extra = ""): string {
-  return `npx --yes ${packageRef()} gate --timeout ${GATE_TIMEOUT_MS}${extra}${extra.includes("--format claude-stop") ? STOP_FAIL_CLOSED : FAIL_CLOSED}`;
+  return `npx --yes ${packageRef()} gate ${TIMEOUT_FLAG}${extra}${extra.includes(STOP_FORMAT) ? STOP_FAIL_CLOSED : FAIL_CLOSED}`;
 }
 
 /** Regex source for a tool-name glob (`*` any run, `?` one character). */
@@ -112,7 +119,7 @@ function installClaude(cwd: string, opts: InstallOptions): InstallResult {
   }, file)];
   if (opts.stop) {
     outcomes.push(upsertHook(data.hooks, "Stop", {
-      hooks: [{ type: "command", command: gateCommand(" --event stop --format claude-stop"), timeout: HOOK_TIMEOUT_SECONDS }],
+      hooks: [{ type: "command", command: gateCommand(` --event stop ${STOP_FORMAT}`), timeout: HOOK_TIMEOUT_SECONDS }],
     }, file));
   }
   return hookResult("claude-code", file, outcomes, opts.stop ? "PreToolUse and Stop hooks" : "PreToolUse hook", data);
@@ -161,9 +168,9 @@ function installOpenCode(cwd: string): InstallResult {
   data.$schema ??= "https://opencode.ai/config.json";
   data.plugin ??= [];
   if (!Array.isArray(data.plugin)) throw new Error(`${file}: plugin must be an array`);
-  const exists = data.plugin.includes("@reneza/skillgate");
+  const exists = data.plugin.includes(PACKAGE);
   if (!exists) {
-    data.plugin.push("@reneza/skillgate");
+    data.plugin.push(PACKAGE);
     writeJson(file, data);
   }
   return { target: "opencode", changed: !exists, file, detail: exists ? "plugin already registered" : "registered Skillgate plugin" };
@@ -194,7 +201,7 @@ function installGitHubActions(cwd: string): InstallResult {
   const file = path.join(cwd, ".github", "workflows", "skillgate.yml");
   if (fs.existsSync(file)) {
     const old = fs.readFileSync(file, "utf8");
-    if (!old.includes("@reneza/skillgate")) throw new Error(`${file} already exists and is not a Skillgate workflow`);
+    if (!old.includes(PACKAGE)) throw new Error(`${file} already exists and is not a Skillgate workflow`);
     return { target: "github-actions", changed: false, file, detail: "workflow already installed" };
   }
   writeTextAtomic(file, actionWorkflow());
@@ -276,9 +283,9 @@ export function doctor(cwd: string, targets: readonly IntegrationTarget[] = INTE
     "codex": [path.join(root, ".codex", "hooks.json"), MARKER, FAIL_CLOSED.trim()],
     "gemini-cli": [path.join(root, ".gemini", "settings.json"), MARKER, FAIL_CLOSED.trim()],
     "cursor": [path.join(root, ".cursor", "hooks.json"), MARKER, '"failClosed": true'],
-    "opencode": [path.join(root, "opencode.json"), "@reneza/skillgate"],
-    "github-actions": [path.join(root, ".github", "workflows", "skillgate.yml"), "@reneza/skillgate"],
-    "pre-commit": [path.join(root, ".pre-commit-config.yaml"), "@reneza/skillgate"],
+    "opencode": [path.join(root, "opencode.json"), PACKAGE],
+    "github-actions": [path.join(root, ".github", "workflows", "skillgate.yml"), PACKAGE],
+    "pre-commit": [path.join(root, ".pre-commit-config.yaml"), PACKAGE],
   };
   for (const target of targets) {
     const [file, marker, failClosed] = probes[target];
@@ -293,7 +300,7 @@ export function doctor(cwd: string, targets: readonly IntegrationTarget[] = INTE
       checks.push({ id: target, ok: false, detail: `hook in ${rel} can skip commits — re-run \`skillgate install pre-commit\`` });
     } else if (target === "claude-code" && !stopHookHealthy(file)) {
       checks.push({ id: target, ok: false, detail: `Stop hook in ${rel} needs Claude JSON output — re-run \`skillgate install claude-code --stop\`` });
-    } else if (failClosed && !fileContains(file, `--timeout ${GATE_TIMEOUT_MS}`)) {
+    } else if (failClosed && !fileContains(file, TIMEOUT_FLAG)) {
       checks.push({ id: target, ok: false, detail: `hook in ${rel} lacks an internal timeout — re-run \`skillgate install ${target}\`` });
     } else {
       checks.push({ id: target, ok: true, detail: `configured in ${rel}` });
@@ -306,7 +313,7 @@ function preCommitHealthy(file: string): boolean {
   try {
     const data: any = parseYaml(fs.readFileSync(file, "utf8"));
     return data.repos?.some((repo: any) => repo.repo === "local" && repo.hooks?.some((hook: any) =>
-      hook.id === "skillgate" && hook.entry?.includes("@reneza/skillgate") && hook.always_run === true && hook.pass_filenames === false));
+      hook.id === "skillgate" && hook.entry?.includes(PACKAGE) && hook.always_run === true && hook.pass_filenames === false));
   } catch { return false; }
 }
 
@@ -314,6 +321,6 @@ function stopHookHealthy(file: string): boolean {
   try {
     const hooks = readJson(file).hooks?.Stop ?? [];
     return !hooks.some((entry: any) => entry.hooks?.some((hook: any) =>
-      hook.command?.includes(MARKER) && (!hook.command.includes("--format claude-stop") || !hook.command.includes(`--timeout ${GATE_TIMEOUT_MS}`) || !hook.command.includes(STOP_FAIL_CLOSED))));
+      hook.command?.includes(MARKER) && (!hook.command.includes(STOP_FORMAT) || !hook.command.includes(TIMEOUT_FLAG) || !hook.command.includes(STOP_FAIL_CLOSED))));
   } catch { return false; }
 }

@@ -13,15 +13,6 @@ import { globSync } from "tinyglobby";
 
 const GIT_OPTS = { stdio: "pipe" as const, encoding: "utf8" as const, maxBuffer: 64 * 1024 * 1024 };
 
-export function gitAvailable(cwd: string): boolean {
-  try {
-    execFileSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd, ...GIT_OPTS });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** Absolute path of the repo root containing `cwd`, or null when not a repo. */
 export function repoRoot(cwd: string): string | null {
   try {
@@ -146,7 +137,7 @@ export function listFilesAtRef(cwd: string, ref: string, strict = false): string
 }
 
 /** Compile the same path glob syntax used by the on-disk scanner. */
-export function globToRegExp(glob: string): RegExp {
+function globToRegExp(glob: string): RegExp {
   return picomatch.makeRe(glob, { dot: true, flags: "s" });
 }
 
