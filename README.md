@@ -157,7 +157,8 @@ Wire an existing policy into a harness without hand-editing its config:
 
 ```bash
 skillgate install claude-code      # add --stop to also gate the end of the agent's turn
-skillgate install codex
+skillgate install codex            # --stop works here too
+skillgate install copilot-cli      # GitHub Copilot CLI and its cloud agent; --stop works here too
 skillgate install gemini-cli
 skillgate install cursor
 skillgate install opencode
@@ -179,7 +180,17 @@ Agent hooks are installed **fail-closed**: if the gate itself cannot run (npx
 missing, offline, registry error), the hook blocks instead of letting the command
 through, and it gets a 10-minute budget so a slow test suite doesn't time out into
 an allow. `doctor` flags a hook installed by an older version that would fail
-open. Re-running `install` upgrades it in place.
+open, a hook or workflow pinned to a different Skillgate version than the one
+you run, and a hook the agent will never run because hooks are switched off
+(`disableAllHooks` in `.claude/settings.json` or `.claude/settings.local.json`,
+`[features] hooks = false` in `.codex/config.toml`). Re-running `install` upgrades
+hooks, the pre-commit entry and the GitHub workflow in place; in the workflow it
+moves the package pin, the pinned actions and a Node 18/20 line, and keeps your
+other edits.
+
+Every command explains itself without running: `skillgate check --help`,
+`skillgate help sync`. A flag that takes a value and is given none is a usage
+error (exit 2).
 
 Generated hooks give the evaluator a nine-minute run budget inside the ten-minute
 host timeout. Claude Stop hooks use explicit stdout JSON decisions, so test output
@@ -189,7 +200,9 @@ Upgrade an existing Stop hook with `skillgate install claude-code --stop`.
 ## Define your gates
 
 Use `skillgate init --preset no-secrets` for credential and private infrastructure
-checks. An optional `review` gate accepts a snapshot-bound OCR or host-agent
+checks. `skillgate init --preset regression` writes the gates that catch an agent
+gaming a green check: no test case or test file removed, no new skipped or focused
+test, and CI workflows and agent instruction files unchanged versus the base ref. An optional `review` gate accepts a snapshot-bound OCR or host-agent
 report. See [secrets and optional review](docs/external-gates.md) for setup, limits,
 and reviewer trust. Both integrations are optional.
 
@@ -458,7 +471,8 @@ claude-code` writes it:
 }
 ```
 
-**Gate "done" itself.** `skillgate install claude-code --stop` also registers a
+**Gate "done" itself.** `skillgate install claude-code --stop` (or `codex --stop`,
+`copilot-cli --stop`) also registers a
 `Stop` hook (`skillgate gate --event stop`). When the agent tries to end its turn
 with changes in the worktree and unmet gates, the stop is refused and the failing
 gates are fed back as the reason, so the agent keeps working instead of reporting
@@ -471,7 +485,8 @@ The same `skillgate gate` judges the command in each agent's own hook protocol:
 
 | Agent | `skillgate install` writes | Hook |
 |---|---|---|
-| Codex | `.codex/hooks.json` | `PreToolUse` on `Bash`. Codex runs a new project hook only after you trust it. |
+| Codex | `.codex/hooks.json` | `PreToolUse` on `Bash`, and `Stop` with `--stop`. Codex runs a new project hook only after you trust it. |
+| GitHub Copilot CLI | `.github/hooks/skillgate.json` | `PreToolUse` on `Bash` (Claude-format payload), and `Stop` with `--stop`. A non-zero exit denies the call; the cloud agent loads the same file. |
 | Gemini CLI | `.gemini/settings.json` | `BeforeTool` on `run_shell_command`, answering with `--format gemini` JSON |
 | Cursor | `.cursor/hooks.json` | `beforeShellExecution` with `failClosed: true`, answering with `--format cursor` JSON |
 
@@ -481,7 +496,7 @@ These need no harness integration at all, which makes them the universal backsto
 
 In GitHub Actions, `skillgate check --format github` turns each failing gate into
 an error annotation on the file and line it names, so the PR shows the problem
-in place. The workflow from `skillgate install github-actions` uses it.
+in place, and writes a result table to the job summary. The workflow from `skillgate install github-actions` uses it.
 
 Native Windows hook files are included in [`contrib/claude-code`](contrib/claude-code/):
 the PowerShell adapter resolves `npx.cmd`, preserves the hook payload on stdin, and
@@ -492,7 +507,7 @@ Windows in CI.
 
 **Worktrunk:** Skillgate works unchanged in [Worktrunk](https://worktrunk.dev/hook/)
 worktrees. Track `.skillgate/done.yaml` and add
-`pre-merge = "npx --yes @reneza/skillgate@0.15.0 check --base '{{ target }}'"`
+`pre-merge = "npx --yes @reneza/skillgate@0.16.0 check --base '{{ target }}'"`
 to `.config/wt.toml`. Worktrunk runs this blocking hook in the source worktree
 after rebasing and aborts the merge on a nonzero exit. Skillgate discovers that
 worktree's policy and evaluates paths relative to it, including when called from

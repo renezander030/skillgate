@@ -10,7 +10,7 @@ import { appendLog, logPath, logPathProblem, summarizeLog, toFailed, type LogRec
 import { checkDrift, driftDiffs, DEFAULT_THRESHOLD, setCanonical } from "./drift.js";
 import { runSync } from "./link.js";
 import { runScaffold, templateHelp } from "./scaffold.js";
-import { doctor, installIntegration, INTEGRATION_TARGETS, type IntegrationTarget } from "./integrations.js";
+import { doctor, installIntegration, INTEGRATION_TARGETS, STOP_TARGETS, type IntegrationTarget } from "./integrations.js";
 import { analyzeCommand } from "./command.js";
 import { reviewSnapshot } from "./review.js";
 import { EVALUATOR_VERSION, cacheDisabledReason, receiptPathIsInput, readCachedResult, runSnapshot, verifyReceipt, writeCachedResult, writeReceipt } from "./receipt.js";
@@ -80,8 +80,7 @@ gates:
   #   file: .skillgate/evidence/test-output.txt
 `;
 
-function help(): void {
-  console.log(`skillgate — deterministic finish-line gates for AI coding agents
+const HELP = `skillgate — deterministic finish-line gates for AI coding agents
 
 Usage:
   skillgate audit                    one-shot read-only audit of this repo (no config needed)
@@ -97,10 +96,10 @@ Usage:
   skillgate gate                     allow/block one command (any harness); exit 2 = block
   skillgate gate --event stop        block an agent from ending its turn while gates fail
   skillgate phase [<id>]             show phase status, or move to <id> if its gates pass
-  skillgate init [--preset no-secrets] write an example .skillgate/done.yaml
+  skillgate init [--preset <name>]   write an example .skillgate/done.yaml (presets: no-secrets, regression)
   skillgate review-snapshot          print the snapshot to bind an optional review report to
-  skillgate install <target|all>     install agent hooks (claude-code, codex, gemini-cli, cursor,
-                                     opencode), github-actions, or pre-commit enforcement
+  skillgate install <target|all>     install agent hooks (claude-code, codex, copilot-cli, gemini-cli,
+                                     cursor, opencode), github-actions, or pre-commit enforcement
   skillgate doctor <target|all>      verify policy discovery and one or more integrations
   skillgate explain --command <cmd>  show structural finish-line matching without running gates
   skillgate explain --commands <f>   replay a command corpus (lines or a decision log; - = stdin)
@@ -111,6 +110,7 @@ Usage:
   skillgate canonical <file>         set which file is the canonical instruction source
   skillgate sync                     make AGENTS.md canonical and link the rest
   skillgate sync --create <tools>    also create pointer files for tools without one (claude-code,...)
+  skillgate <command> --help         one command's usage and flags, without running it
   skillgate --version
 
 Flags:
@@ -118,16 +118,16 @@ Flags:
   --cwd <dir>              run against another directory
   --pin                    check/gate: read the spec from the base ref, not the
                            working tree, so a change can't loosen its own gate
-  --base <ref>             ref for diff-aware gates (no-new, no-deleted) and, with
+  --base <ref>             check/gate: ref for diff-aware gates (no-new, no-deleted) and, with
                            --pin, the pinned spec. Default: SKILLGATE_BASE or origin/HEAD
   --command "<cmd>"        gate: the command to judge (else read from stdin);
                            check: evaluate gates as required for this command (when.command)
-  --format <fmt>           check: github (workflow annotations on failures);
+  --format <fmt>           check: github (workflow annotations on failures and a job summary);
                            gate: text, json, cursor, gemini, or claude-stop hook protocol
   --event stop             gate: judge the agent's Stop event instead of a command
   --tool <name>            gate: judge an agent tool call (gatedTools) instead of a command
   --gate <id>              phase: which phase gate, when the spec has more than one
-  --stop                   install claude-code: also register the Stop hook
+  --stop                   install: also register the Stop hook (claude-code, codex, copilot-cli)
   --timeout <ms>           check/gate: cap the complete gate run (overrides spec timeout)
   --cache                  check: reuse a passing result only for the exact repo snapshot
   --receipt <file>         check: write a machine-readable execution receipt
@@ -148,7 +148,38 @@ Experimental encrypted fleet totals:
   skillgate fhe-metrics help         show the private aggregation walkthrough
 
 Templates (scaffold --template):
-${templateHelp()}`);
+${templateHelp()}`;
+
+function help(): void {
+  console.log(HELP);
+}
+
+/**
+ * One command's usage lines and the flags that name it, cut from the main help, so
+ * \`skillgate <command> --help\` explains the command instead of running it.
+ */
+function commandHelp(command: string): string | null {
+  const usage = helpEntries("Usage:", "  skillgate ").filter(([first]) => first === `  skillgate ${command}` || first.startsWith(`  skillgate ${command} `));
+  if (!usage.length) return null;
+  const names = (entry: string[]) => entry.flatMap((line) => {
+    const text = line.startsWith("  --") ? line.replace(/^ {2}--\S+(?: <[^>]+>| "[^"]+"| \S+)?\s+/, "") : line.trim();
+    const prefix = /^([a-z-]+(?:\/[a-z-]+)*)(?: [a-z-]+)?:/.exec(text)?.[1].split("/") ?? [];
+    const listed = /\(([a-z-]+(?:, [a-z-]+)+)\)/.exec(text)?.[1].split(", ") ?? [];
+    return [...prefix, ...listed];
+  });
+  const own = helpEntries("Flags:", "  --").filter((entry) => entry[0].startsWith("  --cwd ") || names(entry).includes(command));
+  return `Usage:\n${usage.flat().join("\n")}${own.length ? `\n\nFlags:\n${own.flat().join("\n")}` : ""}`;
+}
+
+/** The entries of one help section: each line starting with `start`, with its continuation lines. */
+function helpEntries(heading: string, start: string): string[][] {
+  const from = HELP.indexOf(`${heading}\n`) + heading.length + 1;
+  const entries: string[][] = [];
+  for (const line of HELP.slice(from, HELP.indexOf("\n\n", from)).split("\n")) {
+    if (line.startsWith(start)) entries.push([line]);
+    else entries.at(-1)?.push(line);
+  }
+  return entries;
 }
 
 const args = process.argv.slice(2);
@@ -158,8 +189,22 @@ if (cmd === "--version" || cmd === "-v") {
   console.log(EVALUATOR_VERSION);
   process.exit(0);
 }
-if (!cmd || cmd === "help" || cmd === "--help" || cmd === "-h") {
+if (!cmd || (cmd === "help" && !args[1]) || cmd === "--help" || cmd === "-h") {
   help();
+  process.exit(0);
+}
+
+/** Commands that hand their arguments to another program, which answers --help itself. */
+const FORWARDED = new Set(["fhe-metrics", "verify-patch", "verify-apply"]);
+const helpFor = cmd === "help" ? args[1] : !FORWARDED.has(cmd) && (args.includes("--help") || args.includes("-h")) ? cmd : undefined;
+if (helpFor) {
+  const text = commandHelp(helpFor);
+  if (!text) {
+    console.error(`unknown command: ${helpFor}\n`);
+    help();
+    process.exit(2);
+  }
+  console.log(text);
   process.exit(0);
 }
 
@@ -216,8 +261,8 @@ if (cmd === "fhe-metrics") {
 }
 
 const json = args.includes("--json");
-const cwdIdx = args.indexOf("--cwd");
-const cwd = cwdIdx >= 0 ? path.resolve(args[cwdIdx + 1]) : process.cwd();
+const cwdArg = option("--cwd");
+const cwd = cwdArg != null ? path.resolve(cwdArg) : process.cwd();
 
 const updateAgents = args.includes("--update-agents");
 
@@ -322,9 +367,13 @@ function positionalPath(): string | null {
   return arg ? path.resolve(cwd, arg) : null;
 }
 
+/** The value after `name`, or undefined when the flag is absent. A flag with no value (last, or followed by another `--flag`) is a usage error. */
 function option(name: string): string | undefined {
   const index = args.indexOf(name);
-  return index >= 0 ? args[index + 1] : undefined;
+  if (index < 0) return undefined;
+  const value = args[index + 1];
+  if (value == null || value.startsWith("--")) die(2, `${name} requires a value`);
+  return value;
 }
 
 /** `--timeout <ms>` as the run budget override; throws unless it is a positive integer. */
@@ -336,9 +385,10 @@ function timeoutOption(): number | undefined {
   return ms;
 }
 
-/** `--threshold <0..1>` for drift checks; a flag without a value is NaN, as given. */
+/** `--threshold <0..1>` for drift checks; a value that is not a number is NaN, as given. */
 function thresholdOption(): number {
-  return args.includes("--threshold") ? Number(option("--threshold")) : DEFAULT_THRESHOLD;
+  const value = option("--threshold");
+  return value != null ? Number(value) : DEFAULT_THRESHOLD;
 }
 
 /** Add each missing line to an ignore file, keeping what is there (created when absent). */
@@ -381,11 +431,25 @@ function applied(result: RunResult): number {
   return result.results.filter((r) => r.status !== "skipped").length;
 }
 
+/** How `check` counts a failing run: unmet gates out of every gate in the policy. */
+function unmet(result: RunResult): string {
+  return `${result.failed.length} of ${result.results.length} gates unmet`;
+}
+
 /** Escape a GitHub workflow-command value (`property` also escapes `:` and `,`). */
 function ghEscape(value: string, property = false): string {
   let out = value.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
   if (property) out = out.replace(/:/g, "%3A").replace(/,/g, "%2C");
   return out;
+}
+
+/** A gate verdict as a GitHub job summary: one table row per gate, failures first. */
+function githubSummary(result: RunResult): string {
+  const cell = (value: string) => value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+  const mark = (r: GateResult) => r.status === "skipped" ? "skipped" : r.status === "warn" ? "warning" : r.ok ? "pass" : "fail";
+  const rows = [...result.failed, ...result.results.filter((r) => r.ok)].map((r) => `| ${mark(r)} | \`${cell(r.id)}\` | ${cell(r.reason)} |`);
+  const verdict = result.passed ? `all ${applied(result)} gates passed` : unmet(result);
+  return `### skillgate: ${verdict}\n\n| result | gate | reason |\n|---|---|---|\n${rows.join("\n")}\n`;
 }
 
 /** One `::error` annotation per failed gate, anchored to the file it names when known. */
@@ -470,9 +534,82 @@ if (cmd === "zk-verify") {
   }
 }
 
+/** Test files across JavaScript, TypeScript and Python layouts, for the regression preset. */
+const TEST_FILES = "**/{*.test,*.spec,test_*,*_test}.{ts,tsx,js,jsx,mjs,cjs,py}";
+
+/**
+ * The regression preset: the gates an agent games most often to make a check pass.
+ * Every glob may match nothing (a repository without tests or CI is not a failure),
+ * and every diff gate needs a base ref (origin/HEAD or SKILLGATE_BASE).
+ */
+const REGRESSION_SPEC = `# yaml-language-server: $schema=https://raw.githubusercontent.com/renezander030/skillgate/master/schema/done.schema.json
+name: regression
+finishLine: ["git commit", "git push", "npm publish"]
+gates:
+  # No test case may disappear from a file that still exists.
+  - id: tests-kept
+    type: no-fewer
+    glob: "${TEST_FILES}"
+    pattern: '^\\s*(it|test)(\\.each\\b.*)?\\s*\\(|^\\s*(async\\s+)?def test_'
+    allowEmpty: true
+  # No test file may be deleted.
+  - id: test-files-kept
+    type: no-deleted
+    glob: "${TEST_FILES}"
+    allowEmpty: true
+  # No new skipped, focused or disabled tests.
+  - id: no-new-skips
+    type: no-new
+    glob: "${TEST_FILES}"
+    pattern: '\\.(skip|only|todo)\\s*\\(|\\bx(it|test|describe)\\s*\\(|@pytest\\.mark\\.(skip|xfail)|@unittest\\.skip'
+    allowEmpty: true
+  # CI workflows and agent instruction files change only in a separate, reviewed commit.
+  - id: ci-unchanged
+    type: unchanged
+    glob: ".github/workflows/**"
+    allowEmpty: true
+  - id: instructions-unchanged
+    type: unchanged
+    glob: "{AGENTS.md,CLAUDE.md,GEMINI.md,.github/copilot-instructions.md,.cursor/rules/**}"
+    allowEmpty: true
+`;
+
+interface Preset {
+  spec: string;
+  /** What to tell the owner after writing the policy. */
+  note: string;
+  /** Files the policy needs beside it, written before it. */
+  prepare?: (dir: string) => void;
+}
+
+/** `init --preset <name>`: ready-made policies. */
+const PRESETS: Record<string, Preset> = {
+  "no-secrets": {
+    spec: `name: no-secrets
+finishLine: ["git commit", "git push", "npm publish"]
+gates:
+  - id: no-secrets
+    type: trufflehog
+    timeout: 10000
+    namesFile: .skillgate/forbidden-names.json
+`,
+    note: "Set local forbidden-names.json to a non-empty JSON array of server/domain/tenant names, or remove namesFile for credentials only.",
+    prepare: (dir) => {
+      const names = path.join(dir, "forbidden-names.json");
+      if (!fs.existsSync(names)) fs.writeFileSync(names, "[]\n", { mode: 0o600 });
+      ensureIgnored(path.join(cwd, ".gitignore"), ["/.skillgate/forbidden-names.json", "/.skillgate/scan-cache/"]);
+    },
+  },
+  regression: {
+    spec: REGRESSION_SPEC,
+    note: "The diff gates compare against the base ref (origin/HEAD or SKILLGATE_BASE); without one they fail closed.",
+  },
+};
+
 if (cmd === "init") {
-  const preset = option("--preset");
-  if (args.includes("--preset") && preset !== "no-secrets") die(2, "unknown preset; available: no-secrets");
+  const name = option("--preset");
+  const preset = name != null && Object.hasOwn(PRESETS, name) ? PRESETS[name] : undefined;
+  if (name != null && !preset) die(2, `unknown preset; available: ${Object.keys(PRESETS).join(", ")}`);
   const dir = path.join(cwd, ".skillgate");
   fs.mkdirSync(dir, { recursive: true });
   const target = path.join(dir, "done.yaml");
@@ -480,22 +617,10 @@ if (cmd === "init") {
     console.error(`${path.relative(cwd, target)} already exists`);
     process.exit(1);
   }
-  const secretsSpec = `name: no-secrets
-finishLine: ["git commit", "git push", "npm publish"]
-gates:
-  - id: no-secrets
-    type: trufflehog
-    timeout: 10000
-    namesFile: .skillgate/forbidden-names.json
-`;
-  if (preset) {
-    const names = path.join(dir, "forbidden-names.json");
-    if (!fs.existsSync(names)) fs.writeFileSync(names, "[]\n", { mode: 0o600 });
-    ensureIgnored(path.join(cwd, ".gitignore"), ["/.skillgate/forbidden-names.json", "/.skillgate/scan-cache/"]);
-  }
-  fs.writeFileSync(target, preset ? secretsSpec : EXAMPLE);
+  preset?.prepare?.(dir);
+  fs.writeFileSync(target, preset?.spec ?? EXAMPLE);
   console.log(`wrote ${path.relative(cwd, target)} — edit it, then \`skillgate check\``);
-  if (preset) console.log("Set local forbidden-names.json to a non-empty JSON array of server/domain/tenant names, or remove namesFile for credentials only.");
+  if (preset) console.log(preset.note);
   process.exit(0);
 }
 
@@ -521,7 +646,7 @@ function integrationTargets(value: string | undefined): IntegrationTarget[] {
 if (cmd === "install") {
   const targets = integrationTargets(args[1]);
   const stop = args.includes("--stop");
-  if (stop && !targets.includes("claude-code")) die(2, "--stop applies to the claude-code target");
+  if (stop && !targets.some((target) => STOP_TARGETS.includes(target))) die(2, `--stop applies to the ${STOP_TARGETS.join(", ")} targets`);
   try {
     for (const target of targets) {
       const result = installIntegration(target, cwd, { stop });
@@ -733,7 +858,7 @@ if (cmd === "check") {
       via: "check",
       event: "check",
       decision: result.passed ? "allow" : "block",
-      reason: result.passed ? `all ${applied(result)} applicable gates passed` : `${result.failed.length} of ${result.results.length} gates unmet`,
+      reason: result.passed ? `all ${applied(result)} applicable gates passed` : unmet(result),
       ...(forCommand != null ? { command: forCommand } : {}),
       failed: toFailed(result.failed),
       durationMs: result.durationMs,
@@ -754,7 +879,17 @@ if (cmd === "check") {
   if (cacheReason) console.log(c(C.dim, `  ${cacheReason}`));
   printResults(result.results);
   console.log("");
-  if (format === "github") for (const line of githubAnnotations(result, workspace)) console.log(line);
+  if (format === "github") {
+    for (const line of githubAnnotations(result, workspace)) console.log(line);
+    const summary = process.env.GITHUB_STEP_SUMMARY;
+    if (summary) {
+      try {
+        fs.appendFileSync(summary, githubSummary(result));
+      } catch (error: any) {
+        console.error(c(C.dim, `skillgate: cannot write the job summary: ${error.message}`));
+      }
+    }
+  }
   if (result.passed) {
     const skipped = result.results.length - applied(result);
     const warned = result.results.filter((r) => r.status === "warn").length;
@@ -762,7 +897,7 @@ if (cmd === "check") {
     process.exit(0);
   }
   console.log(
-    c(C.red, `✗ ${result.failed.length} of ${result.results.length} gates unmet: `) +
+    c(C.red, `✗ ${unmet(result)}: `) +
       result.failed.map((f) => f.id).join(", "),
   );
   process.exit(1);
@@ -816,8 +951,9 @@ if (cmd === "drift") {
 }
 
 if (cmd === "sync") {
+  const createAt = args.indexOf("--create");
+  if (createAt >= 0 && (!args[createAt + 1] || args[createAt + 1].startsWith("--"))) die(2, "sync --create requires tool ids, e.g. claude-code,gemini-cli");
   const create = option("--create");
-  if (args.includes("--create") && (!create || create.startsWith("--"))) die(2, "sync --create requires tool ids, e.g. claude-code,gemini-cli");
   const { lines } = runSync(cwd, {
     dryRun: args.includes("--dry-run"),
     symlink: args.includes("--symlink"),

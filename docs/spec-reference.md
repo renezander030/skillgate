@@ -434,7 +434,7 @@ gatedTools: ["mcp__course__publish_*"]
 
 A call to a matching tool runs the gates like a finish-line command. Scope a gate
 to tools with `when.tool` (below). Hooks from `skillgate install claude-code`,
-`codex` and `gemini-cli` include these tools in their matcher, and `doctor` reports
+`codex`, `copilot-cli` and `gemini-cli` include these tools in their matcher, and `doctor` reports
 a hook that does not. The opencode plugin checks `gatedTools` in
 `tool.execute.before`. Cursor's hook covers shell commands only.
 
