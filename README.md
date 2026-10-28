@@ -540,6 +540,21 @@ Two differences that matter beyond "git hook vs git plumbing":
 
 Use the harness hooks for fast feedback in the loop; rely on CI for the guarantee.
 
+## Need it set up for your team?
+
+If `npx @reneza/skillgate@latest audit` shows gaps in your repos and you would rather not wire the gates yourself, I do it as a fixed-scope day: **EUR 700 per day, one day for one repo or one pipeline.**
+
+What one day covers:
+
+- Run the audit and agree your definition of done with you.
+- Write the gates for your stack (tests, lint, secrets, diff review, instruction-file sync).
+- Wire them into your agent (Claude Code, opencode, Codex, Cursor) and into pre-commit and CI.
+- Hand over a short note on how to extend the gates yourself.
+
+What it does not cover: changes to your product code, or running the gates for you afterwards.
+
+To book a day, message me via [renezander.com](https://renezander.com).
+
 ## Documentation
 
 - [Quickstart](docs/quickstart.md) — audit, define, check, wire in.
