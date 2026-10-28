@@ -29,6 +29,10 @@ Wired into your agent, those same checks deny the finish-line command (commit / 
 
 For more practical checks for AI agents, [follow René on GitHub](https://github.com/renezander030).
 
+### Want it set up for your team?
+
+If the audit flagged corners you would rather not wire up yourself, I set skillgate up for you: your definition of done written as `.skillgate/done.yaml`, the gate wired into the agents your team runs (Claude Code, Codex, opencode, Cursor) and a server-side gate in CI, so the guarantee does not rest on a local hook. Fixed scope, quoted in days before any work starts. [Request a setup](https://github.com/renezander030/skillgate/issues/new?template=setup_request.yml) or write to [rene@renezander.com](mailto:rene@renezander.com).
+
 ## See the fleet total without seeing any private repo
 
 Suppose a customer or manager wants one answer: **"What percentage of our required checks pass across all private repositories?"** Sending every repository's report reveals which team or codebase is struggling. Skillgate's experimental encrypted-metrics flow keeps each repository's counts unreadable while a separate collector adds them together.
