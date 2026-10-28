@@ -1,0 +1,31 @@
+name: Setup request
+description: Ask for skillgate to be set up for your team (fixed scope, quoted in days).
+title: "Setup request: "
+labels: ["setup-request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Tell me what you run and where the agent cuts corners. I reply with a fixed scope and a quote in days before any work starts. Prefer private? Write to rene@renezander.com instead.
+  - type: textarea
+    id: agents
+    attributes:
+      label: Agents and harnesses your team uses
+      placeholder: e.g. Claude Code and Codex on 6 developers' machines, opencode in CI
+    validations:
+      required: true
+  - type: textarea
+    id: audit
+    attributes:
+      label: What the audit flagged (optional)
+      description: Paste the output of `npx @reneza/skillgate@latest audit`, with anything private removed.
+  - type: input
+    id: ci
+    attributes:
+      label: CI and git host
+      placeholder: e.g. GitHub Actions, self-hosted GitLab
+  - type: textarea
+    id: done
+    attributes:
+      label: What "done" should mean for you
+      placeholder: e.g. tests and typecheck pass, no secrets, changelog entry, no edits to migrations
