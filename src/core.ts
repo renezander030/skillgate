@@ -689,7 +689,7 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
           : { ...base, ok: true, reason: `${commits.length} commit(s) since ${short} ${gate.trust === "verified" ? "verified" : "signed"}` };
       }
       case "commit-messages": {
-        const re = new RegExp(gate.pattern, gate.flags ?? "");
+        const re = new RegExp(gate.pattern, (gate.flags ?? "").replace(/[gy]/g, ""));
         const commits = commitSubjects(cwd, diffBase);
         const short = baseLabel(diffBase);
         if (commits.length === 0) return { ...base, ok: true, reason: `no commits since ${short}` };
