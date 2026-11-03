@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+- The `commit-messages` gate drops the `g` and `y` flags, as `absent` and `no-new` do,
+  so a matching subject no longer fails because the previous match moved `lastIndex`.
+
 ## 0.16.0 - 2026-10-23
 
 ### Added

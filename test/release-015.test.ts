@@ -115,6 +115,19 @@ test("commit-messages: every non-merge subject since the base must match", () =>
   assert.throws(() => parseSpec(JSON.stringify({ gates: [{ id: "c", type: "commit-messages", pattern: "(" }] }), "t", true), /invalid regex/);
 });
 
+test("commit-messages: g and y flags do not carry lastIndex from one subject to the next", () => {
+  const [dir, base] = gitProject({ "a.txt": "1\n" });
+  for (const [i, subject] of ["feat: add a", "fix: mend a", "docs: note a"].entries()) {
+    write(dir, { "a.txt": `${i + 2}\n` });
+    git(dir, ["commit", "-qam", subject]);
+  }
+  for (const flags of ["g", "y", "gi"]) {
+    const spec: Spec = { gates: [{ id: "conventional", type: "commit-messages", pattern: "^(feat|fix|docs)(\\(.+\\))?: ", flags }] };
+    const r = runGates(spec, dir, { baseRef: base });
+    assert.equal(r.passed, true, `flags ${flags}: ${r.results[0].reason}`);
+  }
+});
+
 // ---- evidence newerThan -----------------------------------------------------
 
 test("evidence newerThan: evidence written before the last source change is stale", () => {
