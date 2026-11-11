@@ -3,7 +3,7 @@ name: Release
 # Tag-driven release: push a SemVer tag (e.g. v0.4.0) to publish.
 #   npm version patch|minor|major   # bumps package.json + creates the tag
 #   git push --follow-tags
-# Requires repo secret NPM_TOKEN (an npm automation token).
+# Publishes through npm trusted publishing (GitHub OIDC): no npm token.
 on:
   push:
     tags:
@@ -42,10 +42,11 @@ jobs:
       - name: Extract this version's changelog section
         run: node .github/scripts/changelog-section.mjs "${GITHUB_REF_NAME#v}" > RELEASE_NOTES.md
 
+      - name: npm 11 for trusted publishing
+        run: npm install -g npm@11.12.1
+
       - name: Publish to npm with provenance
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
