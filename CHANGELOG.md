@@ -15,6 +15,12 @@
   dangling link or a link to a non-file is refused either way.
 
 ### Fixed
+- Diff-aware gates in a pull request are judged against the branch the request targets
+  (`GITHUB_BASE_REF`, GitLab's `CI_MERGE_REQUEST_TARGET_BRANCH_NAME`, Bitbucket's
+  `BITBUCKET_PR_DESTINATION_BRANCH`), not origin's default branch. A request stacked on
+  another branch could pass a `no-fewer` gate after dropping test cases, because the
+  count was compared with the default branch. A target that is not in the checkout
+  fails closed with a fetch hint; `--base` and `SKILLGATE_BASE` still win.
 - Pattern gates (`absent`, `file-contains`, `no-new`, `no-fewer`, `commit-messages`)
   match under the run deadline: a pattern that backtracks catastrophically fails its
   gate with a reason naming the file instead of wedging the hook past its timeout.

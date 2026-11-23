@@ -232,7 +232,10 @@ judged. `ignore` also matches script names (`ignore: ["test:*"]`).
 ### `no-new`, `no-fewer`, `no-deleted` (diff-aware)
 
 These gates compare the working tree with the commit the change forked from
-(`--base <ref>`, `SKILLGATE_BASE`, or origin's default branch). Without a resolvable
+(`--base <ref>`, `SKILLGATE_BASE`, the branch a CI pull request targets, or origin's
+default branch). The pull request's target comes from `GITHUB_BASE_REF`,
+`CI_MERGE_REQUEST_TARGET_BRANCH_NAME` or `BITBUCKET_PR_DESTINATION_BRANCH` and must
+be in the checkout (`fetch-depth: 0`). Without a resolvable
 base they fail closed. The one exception is a repository with no commits at all: its
 first commit is judged against the empty tree.
 

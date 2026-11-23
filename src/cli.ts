@@ -14,7 +14,7 @@ import { doctor, installIntegration, INTEGRATION_TARGETS, STOP_TARGETS, type Int
 import { analyzeCommand } from "./command.js";
 import { reviewSnapshot } from "./review.js";
 import { EVALUATOR_VERSION, cacheDisabledReason, receiptPathIsInput, readCachedResult, runSnapshot, verifyReceipt, writeCachedResult, writeReceipt } from "./receipt.js";
-import { resolveBaseRef, mergeBase, readFileAtRef, repoRelativePath, repoRoot, isClean } from "./git.js";
+import { ciTargetBranch, resolveBaseRef, mergeBase, readFileAtRef, repoRelativePath, repoRoot, isClean } from "./git.js";
 import {
   createPrivatePassProof,
   generateKeyFiles,
@@ -302,6 +302,10 @@ function resolveSpecAndBase(specPath: string | null): Resolved {
   const rawBase = resolveBaseRef(workspace, baseArg);
   if (!rawBase && (baseArg?.trim() || process.env.SKILLGATE_BASE?.trim())) {
     throw new Error("requested base ref cannot be resolved — refusing to use a different baseline");
+  }
+  const target = ciTargetBranch();
+  if (!rawBase && target) {
+    throw new Error(`the pull request's target branch ${target} is not in this checkout (fetch it, e.g. actions/checkout with fetch-depth: 0) — refusing to use a different baseline`);
   }
   const gateBase = rawBase ? mergeBase(workspace, rawBase) : undefined;
 

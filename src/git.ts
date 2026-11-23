@@ -52,6 +52,11 @@ function refExists(cwd: string, ref: string): boolean {
 export function resolveBaseRef(cwd: string, requested?: string): string | null {
   const explicit = requested?.trim() || process.env.SKILLGATE_BASE?.trim();
   if (explicit) return refExists(cwd, explicit) ? explicit : null;
+  // A pull or merge request is judged against the branch it targets, which is not
+  // always origin's default branch (stacked changes, release branches). The target
+  // must resolve: falling back to the default branch would judge the wrong diff.
+  const target = ciTargetBranch();
+  if (target) return [`origin/${target}`, target].find((ref) => refExists(cwd, ref)) ?? null;
   const originHead = (() => {
     try {
       return execFileSync("git", ["symbolic-ref", "refs/remotes/origin/HEAD"], { cwd, ...GIT_OPTS })
@@ -72,6 +77,18 @@ export function resolveBaseRef(cwd: string, requested?: string): string | null {
   // asked for: an explicit ref that does not resolve still fails closed.
   if (!requested?.trim() && !process.env.SKILLGATE_BASE?.trim() && hasNoCommits(cwd)) return EMPTY_TREE;
   return null;
+}
+
+/** CI variables naming the branch a pull or merge request targets, in lookup order. */
+const CI_TARGET_VARS = ["GITHUB_BASE_REF", "CI_MERGE_REQUEST_TARGET_BRANCH_NAME", "BITBUCKET_PR_DESTINATION_BRANCH"];
+
+/** The branch the CI run's pull or merge request targets, or undefined outside one (push events leave it empty). */
+export function ciTargetBranch(): string | undefined {
+  for (const name of CI_TARGET_VARS) {
+    const value = process.env[name]?.trim();
+    if (value) return value;
+  }
+  return undefined;
 }
 
 /** Git's well-known empty tree object. */
