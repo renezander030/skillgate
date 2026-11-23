@@ -167,3 +167,33 @@ export async function summarizeLogFile(file: string, top = 10): Promise<LogSumma
     input.destroy();
   }
 }
+
+/**
+ * Commands from a corpus: one per line, or decision-log JSON lines (their `command`).
+ * A line that opens like a JSON object (`{"`) but does not parse is a truncated or
+ * corrupt log record: it is counted in `skipped`, never replayed as a command. A
+ * shell brace group such as `{ git push; }` is still a command.
+ */
+export function corpusCommands(text: string): { commands: string[]; skipped: number } {
+  const commands: string[] = [];
+  let skipped = 0;
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    if (trimmed.startsWith("{")) {
+      try {
+        const record = JSON.parse(trimmed);
+        if (typeof record?.command === "string" && record.command.trim() && !record.tool) commands.push(record.command.trim());
+        continue;
+      } catch {
+        if (/^\{\s*"/.test(trimmed)) {
+          skipped++;
+          continue;
+        }
+        /* a command that starts with "{" */
+      }
+    }
+    commands.push(trimmed);
+  }
+  return { commands, skipped };
+}

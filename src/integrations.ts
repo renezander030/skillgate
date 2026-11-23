@@ -12,6 +12,9 @@ export type IntegrationTarget = (typeof INTEGRATION_TARGETS)[number];
 /** Agents whose Stop hook takes Claude's `decision: "block"` answer, so `--stop` can gate the end of a turn. */
 export const STOP_TARGETS: readonly IntegrationTarget[] = ["claude-code", "codex", "copilot-cli"];
 
+/** Agents whose hook matcher names tools, so it must also list the policy's `gatedTools`. */
+const TOOL_MATCHER_TARGETS: readonly IntegrationTarget[] = ["claude-code", "codex", "copilot-cli", "gemini-cli", "devin"];
+
 export interface InstallOptions {
   /** claude-code, codex, copilot-cli: also gate the agent's Stop event, so it cannot end a turn with unmet gates. */
   stop?: boolean;
@@ -49,8 +52,13 @@ export interface DoctorCheck {
   detail: string;
 }
 
+/** Replace one agent or CI configuration file under the install's symlink policy. */
+function writeConfig(file: string, text: string, opts: InstallOptions): void {
+  writeTextAtomic(file, text, { followSymlink: opts.followSymlinks });
+}
+
 function writeJson(file: string, value: unknown, opts: InstallOptions): void {
-  writeTextAtomic(file, JSON.stringify(value, null, 2) + "\n", { followSymlink: opts.followSymlinks });
+  writeConfig(file, JSON.stringify(value, null, 2) + "\n", opts);
 }
 
 function packageRef(): string {
@@ -253,10 +261,10 @@ function installGitHubActions(cwd: string, opts: InstallOptions): InstallResult 
     if (!old.includes(PACKAGE)) throw new Error(`${file} already exists and is not a Skillgate workflow`);
     const upgraded = upgradeWorkflow(old);
     if (upgraded === old) return { target: "github-actions", changed: false, file, detail: "workflow already installed" };
-    writeTextAtomic(file, upgraded, { followSymlink: opts.followSymlinks });
+    writeConfig(file, upgraded, opts);
     return { target: "github-actions", changed: true, file, detail: "upgraded workflow to this Skillgate version and its pinned actions" };
   }
-  writeTextAtomic(file, actionWorkflow(), { followSymlink: opts.followSymlinks });
+  writeConfig(file, actionWorkflow(), opts);
   return { target: "github-actions", changed: true, file, detail: "installed pull-request workflow" };
 }
 
@@ -295,7 +303,7 @@ function installPreCommit(cwd: string, opts: InstallOptions): InstallResult {
     });
   }
   if (changed) {
-    writeTextAtomic(file, stringifyYaml(data), { followSymlink: opts.followSymlinks });
+    writeConfig(file, stringifyYaml(data), opts);
   }
   return { target: "pre-commit", changed, file, detail: changed ? "installed or upgraded always-run pre-commit hook" : "hook already installed" };
 }
@@ -319,7 +327,7 @@ export function installIntegration(target: IntegrationTarget, cwd: string, opts:
 
 /** Gated tools a target's hook matcher does not include (only agents whose hooks match tool names). */
 function uncovered(target: IntegrationTarget, text: string, root: string): string[] {
-  if (!["claude-code", "codex", "copilot-cli", "gemini-cli", "devin"].includes(target)) return [];
+  if (!TOOL_MATCHER_TARGETS.includes(target)) return [];
   return gatedTools(root).filter((glob) => !text.includes(JSON.stringify(toolGlobToRegex(glob)).slice(1, -1)));
 }
 

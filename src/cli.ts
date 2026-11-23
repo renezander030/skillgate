@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { findSpecPath, loadSpec, parseSpec, specRoot, workspaceRoot, DEFAULT_SPEC_PATHS, DEFAULT_PHASE_FILE, DEFAULT_RUN_TIMEOUT_MS, type Spec, type PhaseGate } from "./spec.js";
 import { runGates, decideCommand, decideTool, currentPhase, evaluatePhase, gatesForCommand, type GateResult, type RunResult } from "./core.js";
-import { appendLog, logPath, logPathProblem, summarizeLogFile, toFailed, type LogRecord } from "./log.js";
+import { appendLog, corpusCommands, logPath, logPathProblem, summarizeLogFile, toFailed, type LogRecord } from "./log.js";
 import { checkDrift, driftDiffs, DEFAULT_THRESHOLD, setCanonical } from "./drift.js";
 import { runSync } from "./link.js";
 import { runScaffold, templateHelp } from "./scaffold.js";
@@ -667,35 +667,9 @@ if (cmd === "doctor") {
   process.exit(checks.every((check) => check.ok) ? 0 : 1);
 }
 
-/**
- * Commands from a corpus: one per line, or decision-log JSON lines (their `command`).
- * A line that opens like a JSON object (`{"`) but does not parse is a truncated or
- * corrupt log record: it is counted in `skipped`, never replayed as a command. A
- * shell brace group such as `{ git push; }` is still a command.
- */
+/** Commands from a corpus file or stdin (`-`); see corpusCommands for the line rules. */
 function readCorpus(source: string): { commands: string[]; skipped: number } {
-  const text = source === "-" ? fs.readFileSync(0, "utf8") : fs.readFileSync(path.resolve(cwd, source), "utf8");
-  const commands: string[] = [];
-  let skipped = 0;
-  for (const line of text.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    if (trimmed.startsWith("{")) {
-      try {
-        const record = JSON.parse(trimmed);
-        if (typeof record?.command === "string" && record.command.trim() && !record.tool) commands.push(record.command.trim());
-        continue;
-      } catch {
-        if (/^\{\s*"/.test(trimmed)) {
-          skipped++;
-          continue;
-        }
-        /* a command that starts with "{" */
-      }
-    }
-    commands.push(trimmed);
-  }
-  return { commands, skipped };
+  return corpusCommands(source === "-" ? fs.readFileSync(0, "utf8") : fs.readFileSync(path.resolve(cwd, source), "utf8"));
 }
 
 if (cmd === "explain") {

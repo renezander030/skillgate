@@ -398,9 +398,10 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
         const full = path.resolve(cwd, gate.file);
         if (!fs.existsSync(full)) return { ...base, ok: false, reason: `file not found: ${gate.file}`, location: { file: gate.file } };
         const re = new RegExp(gate.pattern, gate.flags ?? "");
-        const text = new Scanner(gate.maxBytes, opts.remainingMs).file(cwd, gate.file, 1);
+        const scan = new Scanner(gate.maxBytes, opts.remainingMs);
+        const text = scan.file(cwd, gate.file, 1);
         if (text == null) return { ...base, ok: false, reason: `file could not be read: ${gate.file}`, location: { file: gate.file } };
-        return new Scanner(gate.maxBytes, opts.remainingMs).test(text, re, gate.file)
+        return scan.test(text, re, gate.file)
           ? { ...base, ok: true, reason: `${gate.file} matches /${gate.pattern}/` }
           : { ...base, ok: false, reason: `${gate.file} missing /${gate.pattern}/`, location: { file: gate.file } };
       }
@@ -505,9 +506,8 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
       }
       case "no-new":
       case "no-fewer": {
-        // Fresh regex per line (drop g/y so lastIndex can't advance between .test calls).
-        const flags = (gate.flags ?? "").replace(/[gy]/g, "");
-        const re = () => new RegExp(gate.pattern, flags);
+        // Drop g/y so lastIndex can't advance between .test calls; one regex then serves every line.
+        const re = new RegExp(gate.pattern, (gate.flags ?? "").replace(/[gy]/g, ""));
         const ignore = gate.ignore ?? [];
         const workFiles = scanFiles(cwd, gate.glob, ignore);
         const baseFiles = listFilesAtRef(cwd, diffBase, true).filter((p) => inScan(p, gate.glob, ignore));
@@ -520,10 +520,10 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
         let firstLost: string | undefined;
         for (const f of union) {
           const baseText = scan.atRef(cwd, diffBase, f, union.length);
-          const fileBase = baseText == null ? 0 : scan.matchingLines(baseText, re(), `${f} at ${baseLabel(diffBase)}`).length;
+          const fileBase = baseText == null ? 0 : scan.matchingLines(baseText, re, `${f} at ${baseLabel(diffBase)}`).length;
           const text = scan.file(cwd, f, union.length);
           // A file gone from the working tree contributes 0; no-deleted covers the file itself.
-          const hits = text == null ? [] : scan.matchingLines(text, re(), f);
+          const hits = text == null ? [] : scan.matchingLines(text, re, f);
           if (hits.length && !firstNew) firstNew = { file: f, line: hits[0] + 1 };
           const fileWork = hits.length;
           if (fileWork < fileBase && !firstLost) firstLost = f;
