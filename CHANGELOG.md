@@ -11,6 +11,10 @@
   dangling link or a link to a non-file is refused either way.
 
 ### Fixed
+- Pattern gates (`absent`, `file-contains`, `no-new`, `no-fewer`, `commit-messages`)
+  match under the run deadline: a pattern that backtracks catastrophically fails its
+  gate with a reason naming the file instead of wedging the hook past its timeout.
+  Matching costs about 0.35 ms more per scanned file.
 - `skillgate log` streams decision logs, skips invalid record shapes without losing
   valid neighboring records, and counts event names such as `__proto__` correctly.
 - `skillgate explain --commands <log>` skips a truncated or corrupt decision-log record

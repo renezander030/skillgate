@@ -62,3 +62,31 @@ test("--follow-symlinks still refuses a dangling link or a link to a directory",
   fs.symlinkSync("d", toDir);
   assert.throws(() => writeTextAtomic(toDir, "{}", { followSymlink: true }), /non-regular file/);
 });
+
+test("a catastrophically backtracking pattern fails its gate at the run deadline instead of wedging", { timeout: 30000 }, t => {
+  const dir = project(t, {
+    ".skillgate/done.yaml": "timeout: 1000\ngates:\n  - id: no-bad\n    type: absent\n    pattern: \"^(a+)+$\"\n    glob: \"data/*.txt\"\n  - id: header\n    type: file-contains\n    file: data/x.txt\n    pattern: \"^(a|aa)+$\"\n",
+    "data/x.txt": "a".repeat(40) + "b\n",
+  });
+  const started = Date.now();
+  const out = spawnSync(process.execPath, [CLI, "check", "--json"], { cwd: dir, encoding: "utf8", timeout: 20000 });
+  assert.notEqual(out.signal, "SIGTERM", "check was killed instead of answering");
+  assert.equal(out.status, 1, out.stderr);
+  assert.ok(Date.now() - started < 15000);
+  const report = JSON.parse(out.stdout);
+  const bad = report.results.find((r: any) => r.id === "no-bad");
+  assert.equal(bad.ok, false);
+  assert.match(bad.reason, /did not finish matching data\/x\.txt before the run deadline/);
+});
+
+test("bounded matching keeps first-hit lines and counts", t => {
+  const dir = project(t, {
+    ".skillgate/done.yaml": "gates:\n  - id: todo\n    type: absent\n    pattern: TODO\n    glob: \"src/*.ts\"\n",
+    "src/a.ts": "one\ntwo // TODO\nthree TODO\n",
+  });
+  const out = sg(dir, ["check", "--json"]);
+  assert.equal(out.status, 1, out.stderr);
+  const r = JSON.parse(out.stdout).results[0];
+  assert.equal(r.reason, "src/a.ts:2 matches /TODO/");
+  assert.deepEqual(r.location, { file: "src/a.ts", line: 2 });
+});
