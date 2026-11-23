@@ -15,6 +15,11 @@
   dangling link or a link to a non-file is refused either way.
 
 ### Fixed
+- A dry run is not a finish line: `npm publish --dry-run`, `git push --dry-run`,
+  `git push -n`, `git commit --dry-run` and any matched command with `--dry-run` before
+  `--` are allowed while gates are unmet, so an agent can check a release before it is
+  done. `git commit -n` (which skips hooks) and `npm run release -- --dry-run` are still
+  finish lines.
 - Finish-line matching reads a here-document body as data: a commit message passed with
   `git commit -F- <<'EOF'` or a note written with `cat > notes.md <<EOF` no longer counts
   as a finish line because a line of it mentions `git push`. The body still counts when a

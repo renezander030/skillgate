@@ -94,3 +94,14 @@ test("a here-document body is data unless a shell reads it", () => {
   assert.equal(isStructuredCommandMatch("cat <<-EOF > n\n\tgit push\n\tEOF\ngit push", push), true);
   assert.equal(isStructuredCommandMatch("git push <<< y", push), true);
 });
+
+test("a dry run does not reach the finish line", () => {
+  const line = ["git push", "git commit", "npm publish", "cargo publish", "npm run release"];
+  for (const command of ["git push --dry-run", "git push -n origin main", "git commit --dry-run -m x", "npm publish --dry-run", "cargo publish --dry-run"]) {
+    assert.equal(isStructuredCommandMatch(command, line), false, command);
+  }
+  // Real finish lines stay gated, dry run or not elsewhere on the line.
+  for (const command of ["git push", "git commit -n -m x", "git push --dry-run && git push", "npm run release -- --dry-run", "npm publish --tag next"]) {
+    assert.equal(isStructuredCommandMatch(command, line), true, command);
+  }
+});

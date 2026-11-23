@@ -262,6 +262,18 @@ function orderedMatch(tokens: string[], pattern: string[]): boolean {
   });
 }
 
+/**
+ * A dry run changes nothing, so it does not reach the finish line: `--dry-run` before any
+ * `--` (`npm publish --dry-run`, `git push --dry-run`, `cargo publish --dry-run`), and
+ * `git push -n`. Elsewhere `-n` means something else (`git commit -n` skips hooks).
+ */
+function isDryRun(tokens: string[]): boolean {
+  const end = tokens.indexOf("--");
+  const options = (end < 0 ? tokens : tokens.slice(0, end)).slice(1).map((token) => token.toLowerCase());
+  if (options.includes("--dry-run")) return true;
+  return executableName(tokens[0] ?? "") === "git" && options[0] === "push" && options.includes("-n");
+}
+
 /** Commands `find` runs through -exec/-execdir/-ok/-okdir. */
 function findExecCommands(tokens: string[]): string[] {
   if (!tokens.length || executableName(tokens[0]) !== "find") return [];
@@ -407,7 +419,7 @@ export function analyzeCommand(command: string, patterns: string[] = []): Comman
   const matchedPatterns: string[] = [];
   for (const pattern of patterns) {
     const wanted = canonicalize(unwrap(tokenizeCommand(pattern)));
-    if (segments.some((segment) => orderedMatch(segment.normalized, wanted))) matchedPatterns.push(pattern);
+    if (segments.some((segment) => !isDryRun(segment.normalized) && orderedMatch(segment.normalized, wanted))) matchedPatterns.push(pattern);
   }
   return { matched: matchedPatterns.length > 0, patterns: matchedPatterns, segments };
 }
