@@ -7,6 +7,9 @@
 ### Fixed
 - `skillgate log` streams decision logs, skips invalid record shapes without losing
   valid neighboring records, and counts event names such as `__proto__` correctly.
+- `skillgate explain --commands <log>` skips a truncated or corrupt decision-log record
+  instead of replaying its JSON text as a command, and reports how many lines it skipped
+  (`skipped` in `--json`).
 - The `commit-messages` gate drops the `g` and `y` flags, as `absent` and `no-new` do,
   so a matching subject no longer fails because the previous match moved `lastIndex`.
 

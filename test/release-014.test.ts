@@ -405,6 +405,34 @@ gates:
   assert.match(sg(["explain", "--command", "git push"], dir).stdout, /gates: fast, full/);
 });
 
+test("explain --commands: a truncated decision-log record is skipped, not replayed as a command", () => {
+  const dir = tmpProject({
+    ".skillgate/done.yaml": `finishLine: ["git push"]
+gates:
+  - id: full
+    type: file-exists
+    file: .skillgate/done.yaml
+`,
+    "decisions.jsonl": [
+      '{"ts":"1","via":"gate","event":"command","decision":"allow","reason":"ok","command":"git status","failed":[]}',
+      '{"ts":"2","via":"gate","event":"command","decision":"block","reason":"full failed","command":"git push origin ma',
+      "{ git push; }",
+      "",
+    ].join("\n"),
+  });
+  const out = sg(["explain", "--commands", "decisions.jsonl", "--json"], dir);
+  assert.equal(out.status, 0, out.stderr);
+  const report = JSON.parse(out.stdout);
+  assert.deepEqual(report.commands.map((c: any) => c.command), ["git status", "{ git push; }"]);
+  assert.equal(report.total, 2);
+  assert.equal(report.skipped, 1);
+
+  const text = sg(["explain", "--commands", "decisions.jsonl"], dir);
+  assert.equal(text.status, 0, text.stderr);
+  assert.match(text.stdout, /1 malformed log line skipped/);
+  assert.doesNotMatch(text.stdout, /"ts":"2"/);
+});
+
 test("gatesForCommand: tool-only gates do not apply to commands", () => {
   const spec: Spec = {
     gates: [

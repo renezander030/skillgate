@@ -665,10 +665,16 @@ if (cmd === "doctor") {
   process.exit(checks.every((check) => check.ok) ? 0 : 1);
 }
 
-/** Commands from a corpus: one per line, or decision-log JSON lines (their `command`). */
-function readCorpus(source: string): string[] {
+/**
+ * Commands from a corpus: one per line, or decision-log JSON lines (their `command`).
+ * A line that opens like a JSON object (`{"`) but does not parse is a truncated or
+ * corrupt log record: it is counted in `skipped`, never replayed as a command. A
+ * shell brace group such as `{ git push; }` is still a command.
+ */
+function readCorpus(source: string): { commands: string[]; skipped: number } {
   const text = source === "-" ? fs.readFileSync(0, "utf8") : fs.readFileSync(path.resolve(cwd, source), "utf8");
   const commands: string[] = [];
+  let skipped = 0;
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
@@ -678,12 +684,16 @@ function readCorpus(source: string): string[] {
         if (typeof record?.command === "string" && record.command.trim() && !record.tool) commands.push(record.command.trim());
         continue;
       } catch {
+        if (/^\{\s*"/.test(trimmed)) {
+          skipped++;
+          continue;
+        }
         /* a command that starts with "{" */
       }
     }
     commands.push(trimmed);
   }
-  return commands;
+  return { commands, skipped };
 }
 
 if (cmd === "explain") {
@@ -695,7 +705,7 @@ if (cmd === "explain") {
   try {
     const spec = loadSpec(specPath);
     if (corpus) {
-      const commands = readCorpus(corpus);
+      const { commands, skipped } = readCorpus(corpus);
       const rows = commands.map((cmdText) => {
         const analysis = analyzeCommand(cmdText, spec.finishLine ?? []);
         return { command: cmdText, matched: analysis.matched, patterns: analysis.patterns, gates: analysis.matched ? gatesForCommand(spec, cmdText) : [] };
@@ -704,13 +714,14 @@ if (cmd === "explain") {
       const byPattern = new Map<string, number>();
       for (const row of gated) for (const p of row.patterns) byPattern.set(p, (byPattern.get(p) ?? 0) + 1);
       if (json) {
-        console.log(JSON.stringify({ finishLine: spec.finishLine ?? [], total: rows.length, gated: gated.length, byPattern: Object.fromEntries(byPattern), commands: rows }, null, 2));
+        console.log(JSON.stringify({ finishLine: spec.finishLine ?? [], total: rows.length, gated: gated.length, skipped, byPattern: Object.fromEntries(byPattern), commands: rows }, null, 2));
       } else {
         for (const row of rows) {
           console.log(`${row.matched ? c(C.red, "MATCH   ") : c(C.dim, "no match")}  ${row.command}${row.matched ? c(C.dim, `  → ${row.gates.join(", ") || "no gates"}`) : ""}`);
         }
         console.log("");
         console.log(`${gated.length} of ${rows.length} commands cross the finish line` + (byPattern.size ? c(C.dim, ` (${[...byPattern].map(([p, n]) => `${p}: ${n}`).join(", ")})`) : ""));
+        if (skipped) console.log(c(C.dim, `${skipped} malformed log line${skipped === 1 ? "" : "s"} skipped`));
       }
       process.exit(0);
     }

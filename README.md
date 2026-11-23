@@ -369,7 +369,8 @@ stopped. It streams the file and counts malformed JSON or invalid record shapes
 as skipped lines, preserving valid neighboring decisions. Memory grows with the
 longest line and the number of distinct events, gates and actions.
 `skillgate explain --commands <file>` replays a command list, or the log
-itself, against the current `finishLine` before you change it.
+itself, against the current `finishLine` before you change it; truncated log
+records are skipped and counted, never replayed as commands.
 
 **Phases, checked live.** A `phase` gate orders work (plan → build → review) and
 requires each phase's gates, plus every earlier phase's, to pass at the moment
