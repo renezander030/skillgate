@@ -24,7 +24,11 @@ launchers without matching quoted prose. Process wrappers (`timeout`, `nice`,
 `ionice`, `stdbuf`, `xargs`, `watch`, `doas`) and `find -exec`/`-execdir` are
 unwrapped too. A program or subcommand the shell only decides at run time fails
 closed: `git $(echo push)` and `git "$SUB"` match every `git` pattern, and
-`g=git; $g push` or `"$(which git)" push` resolve to `git push`. Run
+`g=git; $g push` or `"$(which git)" push` resolve to `git push`. A here-document
+body is data (`git commit -F- <<'EOF'` with a message that names `git push`) unless a
+shell may read it (`bash <<EOF`, `cat <<EOF | sh`, `ssh host <<EOF`); the `$(...)`
+substitutions of an unquoted body still count. A dry run (`--dry-run` before any `--`,
+or `git push -n`) does not cross the finish line. Run
 `skillgate explain --command "..."` to inspect the decision without executing gates.
 
 Runtime loading enforces the same closed shape as the JSON Schema: unknown fields,

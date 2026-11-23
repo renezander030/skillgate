@@ -13,13 +13,19 @@ import { globSync } from "tinyglobby";
 
 const GIT_OPTS = { stdio: "pipe" as const, encoding: "utf8" as const, maxBuffer: 64 * 1024 * 1024 };
 
-/** Absolute path of the repo root containing `cwd`, or null when not a repo. */
-export function repoRoot(cwd: string): string | null {
+/** Output of a read-only git command, or null when it fails (not a repo, unknown ref, git missing). */
+function gitOutput(cwd: string, args: string[]): string | null {
   try {
-    return path.normalize(execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd, ...GIT_OPTS }).trim());
+    return execFileSync("git", args, { cwd, ...GIT_OPTS });
   } catch {
     return null;
   }
+}
+
+/** Absolute path of the repo root containing `cwd`, or null when not a repo. */
+export function repoRoot(cwd: string): string | null {
+  const root = gitOutput(cwd, ["rev-parse", "--show-toplevel"]);
+  return root === null ? null : path.normalize(root.trim());
 }
 
 /** Git-root-relative path for `file`, robust to Windows short/long path aliases. */
@@ -35,12 +41,7 @@ export function repoRelativePath(cwd: string, file: string): string | null {
 }
 
 function refExists(cwd: string, ref: string): boolean {
-  try {
-    execFileSync("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, ...GIT_OPTS });
-    return true;
-  } catch {
-    return false;
-  }
+  return gitOutput(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]) !== null;
 }
 
 /**
@@ -57,15 +58,7 @@ export function resolveBaseRef(cwd: string, requested?: string): string | null {
   // must resolve: falling back to the default branch would judge the wrong diff.
   const target = ciTargetBranch();
   if (target) return [`origin/${target}`, target].find((ref) => refExists(cwd, ref)) ?? null;
-  const originHead = (() => {
-    try {
-      return execFileSync("git", ["symbolic-ref", "refs/remotes/origin/HEAD"], { cwd, ...GIT_OPTS })
-        .trim()
-        .replace(/^refs\/remotes\//, "");
-    } catch {
-      return undefined;
-    }
-  })();
+  const originHead = gitOutput(cwd, ["symbolic-ref", "refs/remotes/origin/HEAD"])?.trim().replace(/^refs\/remotes\//, "");
   const candidates = [originHead, "origin/main", "origin/master", "main", "master"]
     .map((r) => r?.trim())
     .filter((r): r is string => !!r);
@@ -82,8 +75,23 @@ export function resolveBaseRef(cwd: string, requested?: string): string | null {
 /** CI variables naming the branch a pull or merge request targets, in lookup order. */
 const CI_TARGET_VARS = ["GITHUB_BASE_REF", "CI_MERGE_REQUEST_TARGET_BRANCH_NAME", "BITBUCKET_PR_DESTINATION_BRANCH"];
 
+/**
+ * Why no base resolved when the caller named one, or null when falling back is
+ * allowed: an explicit `--base`/`SKILLGATE_BASE`, or the branch a CI pull request
+ * targets, must resolve; Skillgate never judges against a different branch.
+ */
+export function baseRefProblem(requested?: string): string | null {
+  if (requested?.trim() || process.env.SKILLGATE_BASE?.trim()) {
+    return "requested base ref cannot be resolved — refusing to use a different baseline";
+  }
+  const target = ciTargetBranch();
+  return target
+    ? `the pull request's target branch ${target} is not in this checkout (fetch it, e.g. actions/checkout with fetch-depth: 0) — refusing to use a different baseline`
+    : null;
+}
+
 /** The branch the CI run's pull or merge request targets, or undefined outside one (push events leave it empty). */
-export function ciTargetBranch(): string | undefined {
+function ciTargetBranch(): string | undefined {
   for (const name of CI_TARGET_VARS) {
     const value = process.env[name]?.trim();
     if (value) return value;
@@ -101,12 +109,8 @@ export function baseLabel(ref: string): string {
 
 /** True inside a git repository that has no commits on any ref. */
 function hasNoCommits(cwd: string): boolean {
-  try {
-    execFileSync("git", ["rev-parse", "--git-dir"], { cwd, ...GIT_OPTS });
-    return execFileSync("git", ["rev-list", "-n", "1", "--all"], { cwd, ...GIT_OPTS }).trim() === "";
-  } catch {
-    return false;
-  }
+  if (gitOutput(cwd, ["rev-parse", "--git-dir"]) === null) return false;
+  return gitOutput(cwd, ["rev-list", "-n", "1", "--all"])?.trim() === "";
 }
 
 /**
@@ -129,11 +133,7 @@ export function mergeBase(cwd: string, ref: string): string {
 
 /** True in a shallow clone, whose history may stop before the fork point. */
 function isShallow(cwd: string): boolean {
-  try {
-    return execFileSync("git", ["rev-parse", "--is-shallow-repository"], { cwd, ...GIT_OPTS }).trim() === "true";
-  } catch {
-    return false;
-  }
+  return gitOutput(cwd, ["rev-parse", "--is-shallow-repository"])?.trim() === "true";
 }
 
 /** Contents of `relPath` (repo-root-relative, posix) at `ref`, or null if it did not exist there. */
@@ -206,11 +206,8 @@ export function changedFiles(cwd: string, ref: string): string[] | null {
 
 /** True when the worktree has no staged, unstaged or untracked changes. Null outside git. */
 export function isClean(cwd: string): boolean | null {
-  try {
-    return execFileSync("git", ["status", "--porcelain"], { cwd, ...GIT_OPTS }).trim() === "";
-  } catch {
-    return null;
-  }
+  const status = gitOutput(cwd, ["status", "--porcelain"]);
+  return status === null ? null : status.trim() === "";
 }
 
 /**
@@ -221,12 +218,9 @@ export function isClean(cwd: string): boolean | null {
 export function currentBranch(cwd: string): string | undefined {
   const fromEnv = process.env.SKILLGATE_BRANCH?.trim();
   if (fromEnv) return fromEnv;
-  try {
-    const name = execFileSync("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd, ...GIT_OPTS }).trim();
-    if (name) return name;
-  } catch {
-    /* detached HEAD or not a repo */
-  }
+  // Null on a detached HEAD or outside a repository.
+  const name = gitOutput(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"])?.trim();
+  if (name) return name;
   return process.env.GITHUB_HEAD_REF?.trim() || process.env.GITHUB_REF_NAME?.trim() || undefined;
 }
 

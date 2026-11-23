@@ -72,6 +72,20 @@ function heredocAt(command: string, start: number): { end: number; delimiter: st
   return word ? { end: j, delimiter: word, strip, quoted } : null;
 }
 
+/** Read one here-document body from `pos` up to its delimiter line into `heredocs`; returns where the body ends. */
+function readHeredoc(command: string, pos: number, doc: { delimiter: string; strip: boolean; quoted: boolean }, heredocs: Heredoc[]): number {
+  const lines: string[] = [];
+  while (pos < command.length) {
+    const eol = command.indexOf("\n", pos);
+    const line = command.slice(pos, eol < 0 ? command.length : eol).replace(/\r$/, "");
+    pos = eol < 0 ? command.length : eol + 1;
+    if ((doc.strip ? line.replace(/^\t+/, "") : line) === doc.delimiter) break;
+    lines.push(line);
+  }
+  heredocs.push({ body: lines.join("\n"), quoted: doc.quoted });
+  return pos;
+}
+
 /**
  * Split only on unquoted shell control operators. Here-document bodies are not
  * commands of the line that opens them: they are collected into `heredocs` and
@@ -98,17 +112,7 @@ export function splitCommand(command: string, heredocs: Heredoc[] = []): string[
       if (current.trim()) out.push(current.trim());
       current = "";
       let pos = i + 1;
-      for (const doc of open) {
-        const lines: string[] = [];
-        while (pos < command.length) {
-          const eol = command.indexOf("\n", pos);
-          const line = command.slice(pos, eol < 0 ? command.length : eol).replace(/\r$/, "");
-          pos = eol < 0 ? command.length : eol + 1;
-          if ((doc.strip ? line.replace(/^\t+/, "") : line) === doc.delimiter) break;
-          lines.push(line);
-        }
-        heredocs.push({ body: lines.join("\n"), quoted: doc.quoted });
-      }
+      for (const doc of open) pos = readHeredoc(command, pos, doc, heredocs);
       open.length = 0;
       i = pos - 1;
       continue;
