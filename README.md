@@ -365,7 +365,10 @@ editing the snapshot, the expected output or the CI workflow instead of the code
 **See what the gate did.** Set `SKILLGATE_LOG=.git/skillgate/decisions.jsonl` (or
 pass `--log`) and every `gate` and `check` verdict is appended as one JSON line.
 `skillgate log` summarizes it: how often each gate blocked and which commands it
-stopped. `skillgate explain --commands <file>` replays a command list, or the log
+stopped. It streams the file and counts malformed JSON or invalid record shapes
+as skipped lines, preserving valid neighboring decisions. Memory grows with the
+longest line and the number of distinct events, gates and actions.
+`skillgate explain --commands <file>` replays a command list, or the log
 itself, against the current `finishLine` before you change it.
 
 **Phases, checked live.** A `phase` gate orders work (plan → build → review) and

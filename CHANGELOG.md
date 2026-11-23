@@ -2,7 +2,11 @@
 
 ## Unreleased
 
+## 0.16.1 - 2026-11-23
+
 ### Fixed
+- `skillgate log` streams decision logs, skips invalid record shapes without losing
+  valid neighboring records, and counts event names such as `__proto__` correctly.
 - The `commit-messages` gate drops the `g` and `y` flags, as `absent` and `no-new` do,
   so a matching subject no longer fails because the previous match moved `lastIndex`.
 

@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { findSpecPath, loadSpec, parseSpec, specRoot, workspaceRoot, DEFAULT_SPEC_PATHS, DEFAULT_PHASE_FILE, DEFAULT_RUN_TIMEOUT_MS, type Spec, type PhaseGate } from "./spec.js";
 import { runGates, decideCommand, decideTool, currentPhase, evaluatePhase, gatesForCommand, type GateResult, type RunResult } from "./core.js";
-import { appendLog, logPath, logPathProblem, summarizeLog, toFailed, type LogRecord } from "./log.js";
+import { appendLog, logPath, logPathProblem, summarizeLogFile, toFailed, type LogRecord } from "./log.js";
 import { checkDrift, driftDiffs, DEFAULT_THRESHOLD, setCanonical } from "./drift.js";
 import { runSync } from "./link.js";
 import { runScaffold, templateHelp } from "./scaffold.js";
@@ -734,13 +734,12 @@ if (cmd === "explain") {
 if (cmd === "log") {
   const file = positionalPath() ?? logPath(undefined, cwd);
   if (!file) die(2, "usage: skillgate log <file> (or set SKILLGATE_LOG)");
-  let text: string;
+  let summary;
   try {
-    text = fs.readFileSync(file, "utf8");
+    summary = await summarizeLogFile(file);
   } catch (error: any) {
     die(2, `cannot read ${file}: ${error.message}`);
   }
-  const summary = summarizeLog(text);
   if (json) {
     console.log(JSON.stringify(summary, null, 2));
     process.exit(0);
