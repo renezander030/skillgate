@@ -40,14 +40,79 @@ function executableName(value: string): string {
   return base.replace(/\.(exe|cmd|bat)$/i, "");
 }
 
-/** Split only on unquoted shell control operators. */
-export function splitCommand(command: string): string[] {
+/** A here-document's body: data for the command that reads it, unless a shell reads it. */
+export interface Heredoc {
+  body: string;
+  /** A quoted delimiter (`<<'EOF'`) turns off expansion, so the body runs nothing. */
+  quoted: boolean;
+}
+
+/** The here-document operator at `start` (`<<EOF`, `<<-'EOF'`), or null for `<<<` and a bare `<<`. */
+function heredocAt(command: string, start: number): { end: number; delimiter: string; strip: boolean; quoted: boolean } | null {
+  if (!command.startsWith("<<", start) || command[start + 2] === "<") return null;
+  let j = start + 2;
+  const strip = command[j] === "-";
+  if (strip) j++;
+  while (command[j] === " " || command[j] === "\t") j++;
+  let word = "";
+  let quoted = false;
+  for (; j < command.length && !/[\s;&|<>()]/.test(command[j]); j++) {
+    const ch = command[j];
+    if (ch === "'" || ch === '"') {
+      quoted = true;
+      const close = command.indexOf(ch, j + 1);
+      if (close < 0) return null;
+      word += command.slice(j + 1, close);
+      j = close;
+    } else if (ch === "\\") {
+      quoted = true;
+      word += command[++j] ?? "";
+    } else word += ch;
+  }
+  return word ? { end: j, delimiter: word, strip, quoted } : null;
+}
+
+/**
+ * Split only on unquoted shell control operators. Here-document bodies are not
+ * commands of the line that opens them: they are collected into `heredocs` and
+ * left out of the segments.
+ */
+export function splitCommand(command: string, heredocs: Heredoc[] = []): string[] {
   const out: string[] = [];
   let current = "";
   let quote = "";
   let escaped = false;
+  const open: { delimiter: string; strip: boolean; quoted: boolean }[] = [];
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
+    if (!escaped && !quote && ch === "<") {
+      const doc = heredocAt(command, i);
+      if (doc) {
+        open.push(doc);
+        current += command.slice(i, doc.end);
+        i = doc.end - 1;
+        continue;
+      }
+    }
+    if (!escaped && !quote && ch === "\n" && open.length) {
+      if (current.trim()) out.push(current.trim());
+      current = "";
+      let pos = i + 1;
+      for (const doc of open) {
+        const lines: string[] = [];
+        while (pos < command.length) {
+          const eol = command.indexOf("\n", pos);
+          const line = command.slice(pos, eol < 0 ? command.length : eol).replace(/\r$/, "");
+          pos = eol < 0 ? command.length : eol + 1;
+          if ((doc.strip ? line.replace(/^\t+/, "") : line) === doc.delimiter) break;
+          lines.push(line);
+        }
+        heredocs.push({ body: lines.join("\n"), quoted: doc.quoted });
+      }
+      open.length = 0;
+      i = pos - 1;
+      continue;
+    }
     if (escaped) {
       current += ch;
       escaped = false;
@@ -295,10 +360,35 @@ function commandSubstitutions(raw: string): string[] {
   return out;
 }
 
+/**
+ * True when a shell (or a remote one, through ssh) may be reading commands from stdin,
+ * so a here-document fed to the line could run: `bash <<EOF`, `cat <<EOF | sh`,
+ * `ssh host <<EOF`. A shell given its commands with `-c` reads none from stdin.
+ */
+function shellReadsStdin(segments: string[]): boolean {
+  return segments.some((raw) => {
+    const tokens = tokenizeCommand(raw);
+    return tokens.some((token, i) => {
+      const name = executableName(token);
+      if (name === "ssh") return true;
+      if (!SHELLS.has(name) || name === "eval") return false;
+      return nestedShellCommands(tokens.slice(i)).length === 0;
+    });
+  });
+}
+
+/** Commands an unquoted here-document still runs: its `$(...)` and backtick substitutions. Quotes are literal there. */
+function heredocCommands(heredocs: Heredoc[], segments: string[]): string[] {
+  if (shellReadsStdin(segments)) return heredocs.flatMap((doc) => splitCommand(doc.body));
+  return heredocs.filter((doc) => !doc.quoted).flatMap((doc) => commandSubstitutions(doc.body.replace(/['"]/g, " ")));
+}
+
 export function analyzeCommand(command: string, patterns: string[] = []): CommandMatch {
   const segments: CommandSegment[] = [];
   const vars = new Map<string, string>();
-  const pending = splitCommand(command);
+  const heredocs: Heredoc[] = [];
+  const pending = splitCommand(command, heredocs);
+  pending.push(...heredocCommands(heredocs, pending));
   for (let i = 0; i < pending.length; i++) {
     const raw = pending[i];
     const tokens = tokenizeCommand(raw);

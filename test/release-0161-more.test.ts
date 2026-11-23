@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { isStructuredCommandMatch } from "../src/command.js";
 
 const CLI = fileURLToPath(new URL("../src/cli.js", import.meta.url));
 const CI_VARS = ["GITHUB_BASE_REF", "CI_MERGE_REQUEST_TARGET_BRANCH_NAME", "BITBUCKET_PR_DESTINATION_BRANCH", "SKILLGATE_BASE"];
@@ -76,4 +77,20 @@ test("check refuses a pull request whose target branch is not in the checkout", 
   // An explicit base still wins over the CI target.
   const explicit = sg(dir, ["check", "--base", "main"], { GITHUB_BASE_REF: "release-9" });
   assert.equal(explicit.status, 0, explicit.stdout + explicit.stderr);
+});
+
+test("a here-document body is data unless a shell reads it", () => {
+  const push = ["git push"];
+  // Data: a commit message or a note that mentions the finish line.
+  assert.equal(isStructuredCommandMatch("git commit -F- <<'EOF'\nfix: retry\ngit push follows after review\nEOF", push), false);
+  assert.equal(isStructuredCommandMatch("cat > notes.md <<EOF\ngit push origin main\nEOF", push), false);
+  assert.equal(isStructuredCommandMatch("cat <<'EOF' > n.md\nsee $(git push)\nEOF", push), false);
+  assert.equal(isStructuredCommandMatch("cat <<EOF\nunterminated\ngit push", push), false);
+  // Runs: a substitution in an unquoted body, a body a shell reads, the line after the body.
+  assert.equal(isStructuredCommandMatch("cat <<EOF > n.md\nsee $(git push)\nEOF", push), true);
+  assert.equal(isStructuredCommandMatch("bash <<EOF\ngit push\nEOF", push), true);
+  assert.equal(isStructuredCommandMatch("cat <<'EOF' | sh\ngit push\nEOF", push), true);
+  assert.equal(isStructuredCommandMatch("ssh build-host <<EOF\ngit push\nEOF", push), true);
+  assert.equal(isStructuredCommandMatch("cat <<-EOF > n\n\tgit push\n\tEOF\ngit push", push), true);
+  assert.equal(isStructuredCommandMatch("git push <<< y", push), true);
 });

@@ -15,6 +15,11 @@
   dangling link or a link to a non-file is refused either way.
 
 ### Fixed
+- Finish-line matching reads a here-document body as data: a commit message passed with
+  `git commit -F- <<'EOF'` or a note written with `cat > notes.md <<EOF` no longer counts
+  as a finish line because a line of it mentions `git push`. The body still counts when a
+  shell may run it (`bash <<EOF`, `cat <<EOF | sh`, `ssh host <<EOF`), and the `$(...)`
+  and backtick substitutions of an unquoted body still count.
 - Diff-aware gates in a pull request are judged against the branch the request targets
   (`GITHUB_BASE_REF`, GitLab's `CI_MERGE_REQUEST_TARGET_BRANCH_NAME`, Bitbucket's
   `BITBUCKET_PR_DESTINATION_BRANCH`), not origin's default branch. A request stacked on
