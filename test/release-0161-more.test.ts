@@ -95,6 +95,23 @@ test("a here-document body is data unless a shell reads it", () => {
   assert.equal(isStructuredCommandMatch("git push <<< y", push), true);
 });
 
+test("a shallow clone without the fork point names the fetch that fixes it", t => {
+  const src = stacked(t);
+  git(src, "checkout", "-q", "main");
+  fs.writeFileSync(path.join(src, "x"), "x\n");
+  git(src, "add", "x");
+  git(src, "commit", "-qm", "m2");
+  const dir = path.join(tmp(t), "clone");
+  execFileSync("git", ["clone", "-q", "--depth", "1", "--branch", "feature", "--no-single-branch", `file://${src}`, dir], { env: cleanEnv() });
+  const out = sg(dir, ["check"]);
+  assert.equal(out.status, 2);
+  assert.match(out.stderr, /this clone is shallow.*fetch-depth: 0/);
+  // A full clone is judged as before.
+  const full = path.join(tmp(t), "full");
+  execFileSync("git", ["clone", "-q", "--branch", "feature", src, full], { env: cleanEnv() });
+  assert.equal(sg(full, ["check"]).status, 0);
+});
+
 test("a dry run does not reach the finish line", () => {
   const line = ["git push", "git commit", "npm publish", "cargo publish", "npm run release"];
   for (const command of ["git push --dry-run", "git push -n origin main", "git commit --dry-run -m x", "npm publish --dry-run", "cargo publish --dry-run"]) {

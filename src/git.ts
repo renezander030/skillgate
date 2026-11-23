@@ -120,7 +120,19 @@ export function mergeBase(cwd: string, ref: string): string {
   try {
     return execFileSync("git", ["merge-base", ref, "HEAD"], { cwd, ...GIT_OPTS }).trim();
   } catch {
+    if (isShallow(cwd)) {
+      throw new Error(`cannot determine a common ancestor with ${ref} — this clone is shallow, so the fork point is not in it; fetch the history (actions/checkout with fetch-depth: 0, GIT_DEPTH: 0 in GitLab, or git fetch --unshallow)`);
+    }
     throw new Error(`cannot determine a common ancestor with ${ref} — refusing an unrelated or unreadable baseline`);
+  }
+}
+
+/** True in a shallow clone, whose history may stop before the fork point. */
+function isShallow(cwd: string): boolean {
+  try {
+    return execFileSync("git", ["rev-parse", "--is-shallow-repository"], { cwd, ...GIT_OPTS }).trim() === "true";
+  } catch {
+    return false;
   }
 }
 

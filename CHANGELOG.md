@@ -15,6 +15,10 @@
   dangling link or a link to a non-file is refused either way.
 
 ### Fixed
+- In a shallow clone whose history stops before the fork point, diff-aware gates now say
+  so and name the fetch that fixes it (`fetch-depth: 0`, `GIT_DEPTH: 0`, or
+  `git fetch --unshallow`) instead of calling the baseline unrelated or unreadable. The
+  run still fails closed.
 - A dry run is not a finish line: `npm publish --dry-run`, `git push --dry-run`,
   `git push -n`, `git commit --dry-run` and any matched command with `--dry-run` before
   `--` are allowed while gates are unmet, so an agent can check a release before it is
