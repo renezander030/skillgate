@@ -101,7 +101,7 @@ test("install devin registers a fail-closed exec hook and gate judges Devin's ex
   assert.equal(hooks.PreToolUse[0].matcher, "exec");
   assert.match(hooks.PreToolUse[0].hooks[0].command, /@reneza\/skillgate@\S+ gate --timeout 540000 \|\| exit 2$/);
   assert.equal(sg(dir, ["install", "devin"]).stdout.includes("already registered"), true);
-  assert.match(sg(dir, ["doctor", "devin"]).stdout, /devin\s+configured in \.devin\/hooks\.v1\.json/);
+  assert.match(sg(dir, ["doctor", "devin"]).stdout, /devin\s+configured in \.devin[\\/]hooks\.v1\.json/);
 
   const payload = JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "exec", tool_input: { command: "git push origin main" }, session_id: "s1" });
   const blocked = sg(dir, ["gate"], payload);

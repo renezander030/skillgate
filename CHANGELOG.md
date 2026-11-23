@@ -35,6 +35,12 @@
   another branch could pass a `no-fewer` gate after dropping test cases, because the
   count was compared with the default branch. A target that is not in the checkout
   fails closed with a fetch hint; `--base` and `SKILLGATE_BASE` still win.
+  **Upgrade note:** a pull-request CI job that runs `skillgate check` from a shallow
+  checkout (`actions/checkout`'s default `fetch-depth: 1`) now stops with exit 2 and
+  "the pull request's target branch ... is not in this checkout". Fix: set
+  `fetch-depth: 0` on `actions/checkout`, or fetch the target branch before the check
+  (`git fetch origin "$GITHUB_BASE_REF"`). The workflow from
+  `skillgate install github-actions` already fetches full history.
 - Pattern gates (`absent`, `file-contains`, `no-new`, `no-fewer`, `commit-messages`)
   match under the run deadline: a pattern that backtracks catastrophically fails its
   gate with a reason naming the file instead of wedging the hook past its timeout.

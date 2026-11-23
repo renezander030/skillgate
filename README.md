@@ -514,6 +514,10 @@ These need no harness integration at all, which makes them the universal backsto
 In GitHub Actions, `skillgate check --format github` turns each failing gate into
 an error annotation on the file and line it names, so the PR shows the problem
 in place, and writes a result table to the job summary. The workflow from `skillgate install github-actions` uses it.
+In a pull request, diff-aware gates are judged against the branch the request targets, so
+the checkout must contain it: use `actions/checkout` with `fetch-depth: 0` (the installed
+workflow does), or fetch the target branch first. A shallow checkout fails closed with
+exit 2 and says which branch to fetch.
 
 Native Windows hook files are included in [`contrib/claude-code`](contrib/claude-code/):
 the PowerShell adapter resolves `npx.cmd`, preserves the hook payload on stdin, and
