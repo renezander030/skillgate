@@ -128,6 +128,7 @@ Flags:
   --tool <name>            gate: judge an agent tool call (gatedTools) instead of a command
   --gate <id>              phase: which phase gate, when the spec has more than one
   --stop                   install: also register the Stop hook (claude-code, codex, copilot-cli)
+  --follow-symlinks        install: write through a symlinked agent config to the file it names
   --timeout <ms>           check/gate: cap the complete gate run (overrides spec timeout)
   --cache                  check: reuse a passing result only for the exact repo snapshot
   --receipt <file>         check: write a machine-readable execution receipt
@@ -646,10 +647,11 @@ function integrationTargets(value: string | undefined): IntegrationTarget[] {
 if (cmd === "install") {
   const targets = integrationTargets(args[1]);
   const stop = args.includes("--stop");
+  const followSymlinks = args.includes("--follow-symlinks");
   if (stop && !targets.some((target) => STOP_TARGETS.includes(target))) die(2, `--stop applies to the ${STOP_TARGETS.join(", ")} targets`);
   try {
     for (const target of targets) {
-      const result = installIntegration(target, cwd, { stop });
+      const result = installIntegration(target, cwd, { stop, followSymlinks });
       console.log(`${result.changed ? c(C.green, "✓") : c(C.dim, "·")} ${target}  ${result.detail} (${path.relative(cwd, result.file)})`);
     }
     process.exit(0);

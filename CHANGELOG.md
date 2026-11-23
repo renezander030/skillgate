@@ -4,6 +4,12 @@
 
 ## 0.16.1 - 2026-11-23
 
+### Added
+- `skillgate install <target> --follow-symlinks` writes through a symlinked agent
+  configuration (a dotfiles `.claude/settings.json`, say) to the regular file it names
+  and keeps the link. Without the flag a link is still refused, now with a hint; a
+  dangling link or a link to a non-file is refused either way.
+
 ### Fixed
 - `skillgate log` streams decision logs, skips invalid record shapes without losing
   valid neighboring records, and counts event names such as `__proto__` correctly.

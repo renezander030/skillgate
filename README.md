@@ -180,6 +180,11 @@ Skillgate hook when re-run. Installations are serialized per project and replace
 complete config files atomically while preserving existing permissions and other
 hooks. If another installation is active, retry after it finishes.
 
+A symlinked config file (a dotfiles `.claude/settings.json`, say) is refused by
+default, so a link committed to a repository cannot redirect the install into a
+file elsewhere. Pass `--follow-symlinks` to write through the link to the regular
+file it names; the link stays in place. A dangling link is refused either way.
+
 Agent hooks are installed **fail-closed**: if the gate itself cannot run (npx
 missing, offline, registry error), the hook blocks instead of letting the command
 through, and it gets a 10-minute budget so a slow test suite doesn't time out into
