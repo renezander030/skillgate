@@ -99,7 +99,7 @@ Usage:
   skillgate init [--preset <name>]   write an example .skillgate/done.yaml (presets: no-secrets, regression)
   skillgate review-snapshot          print the snapshot to bind an optional review report to
   skillgate install <target|all>     install agent hooks (claude-code, codex, copilot-cli, gemini-cli,
-                                     cursor, opencode), github-actions, or pre-commit enforcement
+                                     cursor, devin, opencode), github-actions, or pre-commit enforcement
   skillgate doctor <target|all>      verify policy discovery and one or more integrations
   skillgate explain --command <cmd>  show structural finish-line matching without running gates
   skillgate explain --commands <f>   replay a command corpus (lines or a decision log; - = stdin)
@@ -329,7 +329,7 @@ function resolveSpecAndBase(specPath: string | null): Resolved {
 }
 
 /** Shell tool names across agents; their calls are judged as commands by `finishLine`. */
-const SHELL_TOOLS = new Set(["Bash", "bash", "run_shell_command", "shell", "local_shell", "exec_command"]);
+const SHELL_TOOLS = new Set(["Bash", "bash", "run_shell_command", "shell", "local_shell", "exec_command", "exec"]);
 
 /** Read a hook payload from stdin: parsed JSON when it is JSON, else the raw text. */
 function readStdinPayload(): { raw: string; data?: any } {

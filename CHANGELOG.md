@@ -5,6 +5,10 @@
 ## 0.16.1 - 2026-11-23
 
 ### Added
+- `skillgate install devin` gates Devin Desktop (formerly Windsurf) and the Devin CLI:
+  a fail-closed `PreToolUse` hook on the `exec` shell tool in `.devin/hooks.v1.json`,
+  checked by `doctor devin`. `gate` now judges an `exec` tool call as a shell command;
+  before, it allowed it as an ungated tool.
 - `skillgate install <target> --follow-symlinks` writes through a symlinked agent
   configuration (a dotfiles `.claude/settings.json`, say) to the regular file it names
   and keeps the link. Without the flag a link is still refused, now with a hint; a

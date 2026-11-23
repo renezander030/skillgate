@@ -6,7 +6,7 @@ import { findSpecPath, loadSpec, specRoot, workspaceRoot } from "./spec.js";
 import { writeTextAtomic, withInstallLock } from "./files.js";
 import { EVALUATOR_VERSION } from "./receipt.js";
 
-export const INTEGRATION_TARGETS = ["claude-code", "codex", "copilot-cli", "gemini-cli", "cursor", "opencode", "github-actions", "pre-commit"] as const;
+export const INTEGRATION_TARGETS = ["claude-code", "codex", "copilot-cli", "gemini-cli", "cursor", "devin", "opencode", "github-actions", "pre-commit"] as const;
 export type IntegrationTarget = (typeof INTEGRATION_TARGETS)[number];
 
 /** Agents whose Stop hook takes Claude's `decision: "block"` answer, so `--stop` can gate the end of a turn. */
@@ -185,6 +185,20 @@ function installCursor(cwd: string, opts: InstallOptions): InstallResult {
   return hookResult("cursor", file, [outcome], "beforeShellExecution hook", data, opts);
 }
 
+/**
+ * Devin Desktop (formerly Windsurf) and the Devin CLI load `.devin/hooks.v1.json`, whose whole
+ * file is the hooks object. Its shell tool is `exec`; a command hook that exits 2 denies the call.
+ */
+function installDevin(cwd: string, opts: InstallOptions): InstallResult {
+  const file = path.join(cwd, ".devin", "hooks.v1.json");
+  const data = readJson(file);
+  const outcome = upsertHook(data, "PreToolUse", {
+    matcher: toolMatcher("exec", cwd),
+    hooks: [{ type: "command", command: gateCommand(), timeout: HOOK_TIMEOUT_SECONDS }],
+  }, file);
+  return hookResult("devin", file, [outcome], "PreToolUse hook", data, opts);
+}
+
 function installOpenCode(cwd: string, opts: InstallOptions): InstallResult {
   const file = path.join(cwd, "opencode.json");
   const data = readJson(file);
@@ -295,6 +309,7 @@ export function installIntegration(target: IntegrationTarget, cwd: string, opts:
     case "copilot-cli": return installCopilot(root, opts);
     case "gemini-cli": return installGemini(root, opts);
     case "cursor": return installCursor(root, opts);
+    case "devin": return installDevin(root, opts);
     case "opencode": return installOpenCode(root, opts);
     case "github-actions": return installGitHubActions(root, opts);
     case "pre-commit": return installPreCommit(root, opts);
@@ -304,7 +319,7 @@ export function installIntegration(target: IntegrationTarget, cwd: string, opts:
 
 /** Gated tools a target's hook matcher does not include (only agents whose hooks match tool names). */
 function uncovered(target: IntegrationTarget, text: string, root: string): string[] {
-  if (!["claude-code", "codex", "copilot-cli", "gemini-cli"].includes(target)) return [];
+  if (!["claude-code", "codex", "copilot-cli", "gemini-cli", "devin"].includes(target)) return [];
   return gatedTools(root).filter((glob) => !text.includes(JSON.stringify(toolGlobToRegex(glob)).slice(1, -1)));
 }
 
@@ -329,6 +344,7 @@ export function doctor(cwd: string, targets: readonly IntegrationTarget[] = INTE
     "copilot-cli": [path.join(root, ".github", "hooks", "skillgate.json"), MARKER, FAIL_CLOSED.trim()],
     "gemini-cli": [path.join(root, ".gemini", "settings.json"), MARKER, FAIL_CLOSED.trim()],
     "cursor": [path.join(root, ".cursor", "hooks.json"), MARKER, '"failClosed": true'],
+    "devin": [path.join(root, ".devin", "hooks.v1.json"), MARKER, FAIL_CLOSED.trim()],
     "opencode": [path.join(root, "opencode.json"), PACKAGE],
     "github-actions": [path.join(root, ".github", "workflows", "skillgate.yml"), PACKAGE],
     "pre-commit": [path.join(root, ".pre-commit-config.yaml"), PACKAGE],

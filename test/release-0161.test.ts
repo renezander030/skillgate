@@ -90,3 +90,26 @@ test("bounded matching keeps first-hit lines and counts", t => {
   assert.equal(r.reason, "src/a.ts:2 matches /TODO/");
   assert.deepEqual(r.location, { file: "src/a.ts", line: 2 });
 });
+
+test("install devin registers a fail-closed exec hook and gate judges Devin's exec payload as a command", t => {
+  const dir = project(t, { ".devin/hooks.v1.json": "{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"echo hi\"}]}]}\n" });
+  fs.rmSync(path.join(dir, "README.md"));
+  const out = sg(dir, ["install", "devin"]);
+  assert.equal(out.status, 0, out.stderr);
+  const hooks = JSON.parse(fs.readFileSync(path.join(dir, ".devin", "hooks.v1.json"), "utf8"));
+  assert.equal(hooks.SessionStart.length, 1, "other hooks are kept");
+  assert.equal(hooks.PreToolUse[0].matcher, "exec");
+  assert.match(hooks.PreToolUse[0].hooks[0].command, /@reneza\/skillgate@\S+ gate --timeout 540000 \|\| exit 2$/);
+  assert.equal(sg(dir, ["install", "devin"]).stdout.includes("already registered"), true);
+  assert.match(sg(dir, ["doctor", "devin"]).stdout, /devin\s+configured in \.devin\/hooks\.v1\.json/);
+
+  const payload = JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "exec", tool_input: { command: "git push origin main" }, session_id: "s1" });
+  const blocked = sg(dir, ["gate"], payload);
+  assert.equal(blocked.status, 2, blocked.stdout);
+  assert.match(blocked.stdout + blocked.stderr, /readme/);
+  fs.writeFileSync(path.join(dir, "README.md"), "hi\n");
+  assert.equal(sg(dir, ["gate"], payload).status, 0);
+  const other = JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "exec", tool_input: { command: "ls" } });
+  fs.rmSync(path.join(dir, "README.md"));
+  assert.equal(sg(dir, ["gate"], other).status, 0, "a command off the finish line is allowed");
+});

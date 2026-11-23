@@ -165,6 +165,7 @@ skillgate install codex            # --stop works here too
 skillgate install copilot-cli      # GitHub Copilot CLI and its cloud agent; --stop works here too
 skillgate install gemini-cli
 skillgate install cursor
+skillgate install devin            # Devin Desktop (formerly Windsurf) and the Devin CLI
 skillgate install opencode
 skillgate install github-actions
 skillgate install pre-commit
@@ -179,6 +180,9 @@ Pre-commit installation includes deletion-only commits and upgrades an existing
 Skillgate hook when re-run. Installations are serialized per project and replace
 complete config files atomically while preserving existing permissions and other
 hooks. If another installation is active, retry after it finishes.
+
+`install devin` writes `.devin/hooks.v1.json` with a `PreToolUse` hook on Devin's
+`exec` shell tool; `gate` judges an `exec` call as a shell command.
 
 A symlinked config file (a dotfiles `.claude/settings.json`, say) is refused by
 default, so a link committed to a repository cannot redirect the install into a
