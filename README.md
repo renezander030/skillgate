@@ -165,6 +165,7 @@ skillgate install codex            # --stop works here too
 skillgate install copilot-cli      # GitHub Copilot CLI and its cloud agent; --stop works here too
 skillgate install gemini-cli
 skillgate install cursor
+skillgate install devin            # Devin Desktop (formerly Windsurf) and the Devin CLI
 skillgate install opencode
 skillgate install github-actions
 skillgate install pre-commit
@@ -179,6 +180,14 @@ Pre-commit installation includes deletion-only commits and upgrades an existing
 Skillgate hook when re-run. Installations are serialized per project and replace
 complete config files atomically while preserving existing permissions and other
 hooks. If another installation is active, retry after it finishes.
+
+`install devin` writes `.devin/hooks.v1.json` with a `PreToolUse` hook on Devin's
+`exec` shell tool; `gate` judges an `exec` call as a shell command.
+
+A symlinked config file (a dotfiles `.claude/settings.json`, say) is refused by
+default, so a link committed to a repository cannot redirect the install into a
+file elsewhere. Pass `--follow-symlinks` to write through the link to the regular
+file it names; the link stays in place. A dangling link is refused either way.
 
 Agent hooks are installed **fail-closed**: if the gate itself cannot run (npx
 missing, offline, registry error), the hook blocks instead of letting the command
@@ -365,8 +374,12 @@ editing the snapshot, the expected output or the CI workflow instead of the code
 **See what the gate did.** Set `SKILLGATE_LOG=.git/skillgate/decisions.jsonl` (or
 pass `--log`) and every `gate` and `check` verdict is appended as one JSON line.
 `skillgate log` summarizes it: how often each gate blocked and which commands it
-stopped. `skillgate explain --commands <file>` replays a command list, or the log
-itself, against the current `finishLine` before you change it.
+stopped. It streams the file and counts malformed JSON or invalid record shapes
+as skipped lines, preserving valid neighboring decisions. Memory grows with the
+longest line and the number of distinct events, gates and actions.
+`skillgate explain --commands <file>` replays a command list, or the log
+itself, against the current `finishLine` before you change it; truncated log
+records are skipped and counted, never replayed as commands.
 
 **Phases, checked live.** A `phase` gate orders work (plan → build → review) and
 requires each phase's gates, plus every earlier phase's, to pass at the moment
@@ -501,6 +514,10 @@ These need no harness integration at all, which makes them the universal backsto
 In GitHub Actions, `skillgate check --format github` turns each failing gate into
 an error annotation on the file and line it names, so the PR shows the problem
 in place, and writes a result table to the job summary. The workflow from `skillgate install github-actions` uses it.
+In a pull request, diff-aware gates are judged against the branch the request targets, so
+the checkout must contain it: use `actions/checkout` with `fetch-depth: 0` (the installed
+workflow does), or fetch the target branch first. A shallow checkout fails closed with
+exit 2 and says which branch to fetch.
 
 Native Windows hook files are included in [`contrib/claude-code`](contrib/claude-code/):
 the PowerShell adapter resolves `npx.cmd`, preserves the hook payload on stdin, and

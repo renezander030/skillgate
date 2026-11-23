@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { findSpecPath, loadSpec, parseSpec, specRoot, workspaceRoot, DEFAULT_SPEC_PATHS, DEFAULT_PHASE_FILE, DEFAULT_RUN_TIMEOUT_MS, type Spec, type PhaseGate } from "./spec.js";
 import { runGates, decideCommand, decideTool, currentPhase, evaluatePhase, gatesForCommand, type GateResult, type RunResult } from "./core.js";
-import { appendLog, logPath, logPathProblem, summarizeLog, toFailed, type LogRecord } from "./log.js";
+import { appendLog, corpusCommands, logPath, logPathProblem, summarizeLogFile, toFailed, type LogRecord } from "./log.js";
 import { checkDrift, driftDiffs, DEFAULT_THRESHOLD, setCanonical } from "./drift.js";
 import { runSync } from "./link.js";
 import { runScaffold, templateHelp } from "./scaffold.js";
@@ -14,7 +14,7 @@ import { doctor, installIntegration, INTEGRATION_TARGETS, STOP_TARGETS, type Int
 import { analyzeCommand } from "./command.js";
 import { reviewSnapshot } from "./review.js";
 import { EVALUATOR_VERSION, cacheDisabledReason, receiptPathIsInput, readCachedResult, runSnapshot, verifyReceipt, writeCachedResult, writeReceipt } from "./receipt.js";
-import { resolveBaseRef, mergeBase, readFileAtRef, repoRelativePath, repoRoot, isClean } from "./git.js";
+import { baseRefProblem, resolveBaseRef, mergeBase, readFileAtRef, repoRelativePath, repoRoot, isClean } from "./git.js";
 import {
   createPrivatePassProof,
   generateKeyFiles,
@@ -99,7 +99,7 @@ Usage:
   skillgate init [--preset <name>]   write an example .skillgate/done.yaml (presets: no-secrets, regression)
   skillgate review-snapshot          print the snapshot to bind an optional review report to
   skillgate install <target|all>     install agent hooks (claude-code, codex, copilot-cli, gemini-cli,
-                                     cursor, opencode), github-actions, or pre-commit enforcement
+                                     cursor, devin, opencode), github-actions, or pre-commit enforcement
   skillgate doctor <target|all>      verify policy discovery and one or more integrations
   skillgate explain --command <cmd>  show structural finish-line matching without running gates
   skillgate explain --commands <f>   replay a command corpus (lines or a decision log; - = stdin)
@@ -128,6 +128,7 @@ Flags:
   --tool <name>            gate: judge an agent tool call (gatedTools) instead of a command
   --gate <id>              phase: which phase gate, when the spec has more than one
   --stop                   install: also register the Stop hook (claude-code, codex, copilot-cli)
+  --follow-symlinks        install: write through a symlinked agent config to the file it names
   --timeout <ms>           check/gate: cap the complete gate run (overrides spec timeout)
   --cache                  check: reuse a passing result only for the exact repo snapshot
   --receipt <file>         check: write a machine-readable execution receipt
@@ -299,9 +300,8 @@ function resolveSpecAndBase(specPath: string | null): Resolved {
   const specPathHint = specPath && fs.existsSync(specPath) ? specPath : null;
   const workspace = workspaceRoot(specPathHint, cwd);
   const rawBase = resolveBaseRef(workspace, baseArg);
-  if (!rawBase && (baseArg?.trim() || process.env.SKILLGATE_BASE?.trim())) {
-    throw new Error("requested base ref cannot be resolved — refusing to use a different baseline");
-  }
+  const baseProblem = rawBase ? null : baseRefProblem(baseArg);
+  if (baseProblem) throw new Error(baseProblem);
   const gateBase = rawBase ? mergeBase(workspace, rawBase) : undefined;
 
   if (!pin) {
@@ -328,7 +328,7 @@ function resolveSpecAndBase(specPath: string | null): Resolved {
 }
 
 /** Shell tool names across agents; their calls are judged as commands by `finishLine`. */
-const SHELL_TOOLS = new Set(["Bash", "bash", "run_shell_command", "shell", "local_shell", "exec_command"]);
+const SHELL_TOOLS = new Set(["Bash", "bash", "run_shell_command", "shell", "local_shell", "exec_command", "exec"]);
 
 /** Read a hook payload from stdin: parsed JSON when it is JSON, else the raw text. */
 function readStdinPayload(): { raw: string; data?: any } {
@@ -646,10 +646,11 @@ function integrationTargets(value: string | undefined): IntegrationTarget[] {
 if (cmd === "install") {
   const targets = integrationTargets(args[1]);
   const stop = args.includes("--stop");
+  const followSymlinks = args.includes("--follow-symlinks");
   if (stop && !targets.some((target) => STOP_TARGETS.includes(target))) die(2, `--stop applies to the ${STOP_TARGETS.join(", ")} targets`);
   try {
     for (const target of targets) {
-      const result = installIntegration(target, cwd, { stop });
+      const result = installIntegration(target, cwd, { stop, followSymlinks });
       console.log(`${result.changed ? c(C.green, "✓") : c(C.dim, "·")} ${target}  ${result.detail} (${path.relative(cwd, result.file)})`);
     }
     process.exit(0);
@@ -665,25 +666,9 @@ if (cmd === "doctor") {
   process.exit(checks.every((check) => check.ok) ? 0 : 1);
 }
 
-/** Commands from a corpus: one per line, or decision-log JSON lines (their `command`). */
-function readCorpus(source: string): string[] {
-  const text = source === "-" ? fs.readFileSync(0, "utf8") : fs.readFileSync(path.resolve(cwd, source), "utf8");
-  const commands: string[] = [];
-  for (const line of text.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    if (trimmed.startsWith("{")) {
-      try {
-        const record = JSON.parse(trimmed);
-        if (typeof record?.command === "string" && record.command.trim() && !record.tool) commands.push(record.command.trim());
-        continue;
-      } catch {
-        /* a command that starts with "{" */
-      }
-    }
-    commands.push(trimmed);
-  }
-  return commands;
+/** Commands from a corpus file or stdin (`-`); see corpusCommands for the line rules. */
+function readCorpus(source: string): { commands: string[]; skipped: number } {
+  return corpusCommands(source === "-" ? fs.readFileSync(0, "utf8") : fs.readFileSync(path.resolve(cwd, source), "utf8"));
 }
 
 if (cmd === "explain") {
@@ -695,7 +680,7 @@ if (cmd === "explain") {
   try {
     const spec = loadSpec(specPath);
     if (corpus) {
-      const commands = readCorpus(corpus);
+      const { commands, skipped } = readCorpus(corpus);
       const rows = commands.map((cmdText) => {
         const analysis = analyzeCommand(cmdText, spec.finishLine ?? []);
         return { command: cmdText, matched: analysis.matched, patterns: analysis.patterns, gates: analysis.matched ? gatesForCommand(spec, cmdText) : [] };
@@ -704,13 +689,14 @@ if (cmd === "explain") {
       const byPattern = new Map<string, number>();
       for (const row of gated) for (const p of row.patterns) byPattern.set(p, (byPattern.get(p) ?? 0) + 1);
       if (json) {
-        console.log(JSON.stringify({ finishLine: spec.finishLine ?? [], total: rows.length, gated: gated.length, byPattern: Object.fromEntries(byPattern), commands: rows }, null, 2));
+        console.log(JSON.stringify({ finishLine: spec.finishLine ?? [], total: rows.length, gated: gated.length, skipped, byPattern: Object.fromEntries(byPattern), commands: rows }, null, 2));
       } else {
         for (const row of rows) {
           console.log(`${row.matched ? c(C.red, "MATCH   ") : c(C.dim, "no match")}  ${row.command}${row.matched ? c(C.dim, `  → ${row.gates.join(", ") || "no gates"}`) : ""}`);
         }
         console.log("");
         console.log(`${gated.length} of ${rows.length} commands cross the finish line` + (byPattern.size ? c(C.dim, ` (${[...byPattern].map(([p, n]) => `${p}: ${n}`).join(", ")})`) : ""));
+        if (skipped) console.log(c(C.dim, `${skipped} malformed log line${skipped === 1 ? "" : "s"} skipped`));
       }
       process.exit(0);
     }
@@ -734,13 +720,12 @@ if (cmd === "explain") {
 if (cmd === "log") {
   const file = positionalPath() ?? logPath(undefined, cwd);
   if (!file) die(2, "usage: skillgate log <file> (or set SKILLGATE_LOG)");
-  let text: string;
+  let summary;
   try {
-    text = fs.readFileSync(file, "utf8");
+    summary = await summarizeLogFile(file);
   } catch (error: any) {
     die(2, `cannot read ${file}: ${error.message}`);
   }
-  const summary = summarizeLog(text);
   if (json) {
     console.log(JSON.stringify(summary, null, 2));
     process.exit(0);

@@ -6,15 +6,20 @@ import { findSpecPath, loadSpec, specRoot, workspaceRoot } from "./spec.js";
 import { writeTextAtomic, withInstallLock } from "./files.js";
 import { EVALUATOR_VERSION } from "./receipt.js";
 
-export const INTEGRATION_TARGETS = ["claude-code", "codex", "copilot-cli", "gemini-cli", "cursor", "opencode", "github-actions", "pre-commit"] as const;
+export const INTEGRATION_TARGETS = ["claude-code", "codex", "copilot-cli", "gemini-cli", "cursor", "devin", "opencode", "github-actions", "pre-commit"] as const;
 export type IntegrationTarget = (typeof INTEGRATION_TARGETS)[number];
 
 /** Agents whose Stop hook takes Claude's `decision: "block"` answer, so `--stop` can gate the end of a turn. */
 export const STOP_TARGETS: readonly IntegrationTarget[] = ["claude-code", "codex", "copilot-cli"];
 
+/** Agents whose hook matcher names tools, so it must also list the policy's `gatedTools`. */
+const TOOL_MATCHER_TARGETS: readonly IntegrationTarget[] = ["claude-code", "codex", "copilot-cli", "gemini-cli", "devin"];
+
 export interface InstallOptions {
   /** claude-code, codex, copilot-cli: also gate the agent's Stop event, so it cannot end a turn with unmet gates. */
   stop?: boolean;
+  /** Write through a symlinked configuration file to the regular file it names (dotfiles setups). */
+  followSymlinks?: boolean;
 }
 
 /** Hook budget in seconds. Long enough for a test suite; a hook that times out fails open in most agents. */
@@ -47,8 +52,13 @@ export interface DoctorCheck {
   detail: string;
 }
 
-function writeJson(file: string, value: unknown): void {
-  writeTextAtomic(file, JSON.stringify(value, null, 2) + "\n");
+/** Replace one agent or CI configuration file under the install's symlink policy. */
+function writeConfig(file: string, text: string, opts: InstallOptions): void {
+  writeTextAtomic(file, text, { followSymlink: opts.followSymlinks });
+}
+
+function writeJson(file: string, value: unknown, opts: InstallOptions): void {
+  writeConfig(file, JSON.stringify(value, null, 2) + "\n", opts);
 }
 
 function packageRef(): string {
@@ -106,9 +116,9 @@ function upsertHook(hooks: Record<string, unknown>, event: string, entry: unknow
   return "updated";
 }
 
-function hookResult(target: IntegrationTarget, file: string, outcomes: Upsert[], what: string, data: unknown): InstallResult {
+function hookResult(target: IntegrationTarget, file: string, outcomes: Upsert[], what: string, data: unknown, opts: InstallOptions): InstallResult {
   const changed = outcomes.some((o) => o !== "unchanged");
-  if (changed) writeJson(file, data);
+  if (changed) writeJson(file, data, opts);
   const detail = !changed
     ? `${what} already registered`
     : outcomes.includes("updated") ? `updated ${what} to the fail-closed form` : `registered fail-closed ${what}`;
@@ -127,7 +137,7 @@ function installGateHooks(target: IntegrationTarget, file: string, cwd: string, 
   data.hooks ??= {};
   const outcomes = [upsertHook(data.hooks, "PreToolUse", entry(gateCommand(), toolMatcher("Bash", cwd)), file)];
   if (opts.stop) outcomes.push(upsertHook(data.hooks, "Stop", entry(gateCommand(STOP_GATE)), file));
-  return hookResult(target, file, outcomes, opts.stop ? "PreToolUse and Stop hooks" : "PreToolUse hook", data);
+  return hookResult(target, file, outcomes, opts.stop ? "PreToolUse and Stop hooks" : "PreToolUse hook", data, opts);
 }
 
 function installClaude(cwd: string, opts: InstallOptions): InstallResult {
@@ -159,7 +169,7 @@ function installCopilot(cwd: string, opts: InstallOptions): InstallResult {
   }), (data) => { data.version ??= 1; });
 }
 
-function installGemini(cwd: string): InstallResult {
+function installGemini(cwd: string, opts: InstallOptions): InstallResult {
   const file = path.join(cwd, ".gemini", "settings.json");
   const data = readJson(file);
   data.hooks ??= {};
@@ -167,10 +177,10 @@ function installGemini(cwd: string): InstallResult {
     matcher: toolMatcher("run_shell_command", cwd),
     hooks: [{ name: "skillgate", type: "command", command: gateCommand(" --format gemini"), timeout: HOOK_TIMEOUT_SECONDS * 1000 }],
   }, file);
-  return hookResult("gemini-cli", file, [outcome], "BeforeTool hook", data);
+  return hookResult("gemini-cli", file, [outcome], "BeforeTool hook", data, opts);
 }
 
-function installCursor(cwd: string): InstallResult {
+function installCursor(cwd: string, opts: InstallOptions): InstallResult {
   const file = path.join(cwd, ".cursor", "hooks.json");
   const data = readJson(file);
   data.version ??= 1;
@@ -180,10 +190,24 @@ function installCursor(cwd: string): InstallResult {
     timeout: HOOK_TIMEOUT_SECONDS,
     failClosed: true,
   }, file);
-  return hookResult("cursor", file, [outcome], "beforeShellExecution hook", data);
+  return hookResult("cursor", file, [outcome], "beforeShellExecution hook", data, opts);
 }
 
-function installOpenCode(cwd: string): InstallResult {
+/**
+ * Devin Desktop (formerly Windsurf) and the Devin CLI load `.devin/hooks.v1.json`, whose whole
+ * file is the hooks object. Its shell tool is `exec`; a command hook that exits 2 denies the call.
+ */
+function installDevin(cwd: string, opts: InstallOptions): InstallResult {
+  const file = path.join(cwd, ".devin", "hooks.v1.json");
+  const data = readJson(file);
+  const outcome = upsertHook(data, "PreToolUse", {
+    matcher: toolMatcher("exec", cwd),
+    hooks: [{ type: "command", command: gateCommand(), timeout: HOOK_TIMEOUT_SECONDS }],
+  }, file);
+  return hookResult("devin", file, [outcome], "PreToolUse hook", data, opts);
+}
+
+function installOpenCode(cwd: string, opts: InstallOptions): InstallResult {
   const file = path.join(cwd, "opencode.json");
   const data = readJson(file);
   data.$schema ??= "https://opencode.ai/config.json";
@@ -192,7 +216,7 @@ function installOpenCode(cwd: string): InstallResult {
   const exists = data.plugin.includes(PACKAGE);
   if (!exists) {
     data.plugin.push(PACKAGE);
-    writeJson(file, data);
+    writeJson(file, data, opts);
   }
   return { target: "opencode", changed: !exists, file, detail: exists ? "plugin already registered" : "registered Skillgate plugin" };
 }
@@ -230,17 +254,17 @@ jobs:
 `;
 }
 
-function installGitHubActions(cwd: string): InstallResult {
+function installGitHubActions(cwd: string, opts: InstallOptions): InstallResult {
   const file = path.join(cwd, ".github", "workflows", "skillgate.yml");
   if (fs.existsSync(file)) {
     const old = fs.readFileSync(file, "utf8");
     if (!old.includes(PACKAGE)) throw new Error(`${file} already exists and is not a Skillgate workflow`);
     const upgraded = upgradeWorkflow(old);
     if (upgraded === old) return { target: "github-actions", changed: false, file, detail: "workflow already installed" };
-    writeTextAtomic(file, upgraded);
+    writeConfig(file, upgraded, opts);
     return { target: "github-actions", changed: true, file, detail: "upgraded workflow to this Skillgate version and its pinned actions" };
   }
-  writeTextAtomic(file, actionWorkflow());
+  writeConfig(file, actionWorkflow(), opts);
   return { target: "github-actions", changed: true, file, detail: "installed pull-request workflow" };
 }
 
@@ -256,7 +280,7 @@ function upgradeWorkflow(text: string): string {
   return out.replace(/^(\s*node-version:\s*)(['"]?)(?:18|20)\2[ \t]*$/m, `$1'${WORKFLOW_NODE}'`);
 }
 
-function installPreCommit(cwd: string): InstallResult {
+function installPreCommit(cwd: string, opts: InstallOptions): InstallResult {
   const file = path.join(cwd, ".pre-commit-config.yaml");
   const data: any = fs.existsSync(file) ? parseYaml(fs.readFileSync(file, "utf8")) : {};
   if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error(`${file}: expected a YAML object`);
@@ -279,7 +303,7 @@ function installPreCommit(cwd: string): InstallResult {
     });
   }
   if (changed) {
-    writeTextAtomic(file, stringifyYaml(data));
+    writeConfig(file, stringifyYaml(data), opts);
   }
   return { target: "pre-commit", changed, file, detail: changed ? "installed or upgraded always-run pre-commit hook" : "hook already installed" };
 }
@@ -291,18 +315,19 @@ export function installIntegration(target: IntegrationTarget, cwd: string, opts:
     case "claude-code": return installClaude(root, opts);
     case "codex": return installCodex(root, opts);
     case "copilot-cli": return installCopilot(root, opts);
-    case "gemini-cli": return installGemini(root);
-    case "cursor": return installCursor(root);
-    case "opencode": return installOpenCode(root);
-    case "github-actions": return installGitHubActions(root);
-    case "pre-commit": return installPreCommit(root);
+    case "gemini-cli": return installGemini(root, opts);
+    case "cursor": return installCursor(root, opts);
+    case "devin": return installDevin(root, opts);
+    case "opencode": return installOpenCode(root, opts);
+    case "github-actions": return installGitHubActions(root, opts);
+    case "pre-commit": return installPreCommit(root, opts);
     }
   });
 }
 
 /** Gated tools a target's hook matcher does not include (only agents whose hooks match tool names). */
 function uncovered(target: IntegrationTarget, text: string, root: string): string[] {
-  if (!["claude-code", "codex", "copilot-cli", "gemini-cli"].includes(target)) return [];
+  if (!TOOL_MATCHER_TARGETS.includes(target)) return [];
   return gatedTools(root).filter((glob) => !text.includes(JSON.stringify(toolGlobToRegex(glob)).slice(1, -1)));
 }
 
@@ -327,6 +352,7 @@ export function doctor(cwd: string, targets: readonly IntegrationTarget[] = INTE
     "copilot-cli": [path.join(root, ".github", "hooks", "skillgate.json"), MARKER, FAIL_CLOSED.trim()],
     "gemini-cli": [path.join(root, ".gemini", "settings.json"), MARKER, FAIL_CLOSED.trim()],
     "cursor": [path.join(root, ".cursor", "hooks.json"), MARKER, '"failClosed": true'],
+    "devin": [path.join(root, ".devin", "hooks.v1.json"), MARKER, FAIL_CLOSED.trim()],
     "opencode": [path.join(root, "opencode.json"), PACKAGE],
     "github-actions": [path.join(root, ".github", "workflows", "skillgate.yml"), PACKAGE],
     "pre-commit": [path.join(root, ".pre-commit-config.yaml"), PACKAGE],

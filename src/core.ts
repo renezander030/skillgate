@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import vm from "node:vm";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -137,19 +138,6 @@ function runOne(gate: Gate, cwd: string, opts: RunOptions): GateResult {
 const DEFAULT_TRIVY_SCANNERS: NonNullable<TrivyGate["scanners"]> = ["vuln", "secret"];
 const DEFAULT_TRIVY_SEVERITY: NonNullable<TrivyGate["severity"]> = ["CRITICAL"];
 
-/** Count lines of `text` that match `re`; calls `onFirst` with the 0-based index of the first hit. */
-function countMatchingLines(text: string, re: RegExp, onFirst?: (i: number) => void): number {
-  const lines = text.split("\n");
-  let n = 0;
-  for (let i = 0; i < lines.length; i++) {
-    if (re.test(lines[i])) {
-      if (n === 0 && onFirst) onFirst(i);
-      n++;
-    }
-  }
-  return n;
-}
-
 /**
  * Changed files for a command gate: `SKILLGATE_CHANGED_FILES` names a temporary
  * file listing the existing files changed versus the base (one per line, filtered
@@ -174,6 +162,14 @@ function changedFilesEnv(gate: CommandGate, cwd: string, baseRef: string | undef
     cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
   };
 }
+
+/** Line matching and whole-text matching, run in a context the deadline can interrupt. */
+const LINES = new vm.Script(`(() => {
+  const lines = text.split("\\n"), hits = [];
+  for (let i = 0; i < lines.length && hits.length < limit; i++) if (re.test(lines[i])) hits.push(i);
+  return hits;
+})()`);
+const TEST = new vm.Script("re.test(text)");
 
 /** A pattern gate hit a read limit; the gate fails with this message. */
 class ScanLimit extends Error {}
@@ -215,6 +211,37 @@ class Scanner {
     this.cap(rel, size);
     this.scanned++;
     return fs.readFileSync(full, "utf8");
+  }
+
+  /**
+   * 0-based indexes of the lines of `text` that match `re`, at most `limit` of them. Matching
+   * runs under the run deadline, so a pattern that backtracks catastrophically fails the gate
+   * instead of wedging the hook past its host's timeout.
+   */
+  matchingLines(text: string, re: RegExp, label: string, limit = Number.POSITIVE_INFINITY): number[] {
+    return Array.from(this.bounded(LINES, { text, re, limit }, re, label) as number[]);
+  }
+
+  /** Whether `re` matches anywhere in `text`, under the run deadline. */
+  test(text: string, re: RegExp, label: string): boolean {
+    return this.bounded(TEST, { text, re }, re, label) as boolean;
+  }
+
+  private context?: vm.Context;
+
+  private bounded(script: vm.Script, values: Record<string, unknown>, re: RegExp, label: string): unknown {
+    const left = this.deadline - Date.now();
+    if (left <= 0) throw new ScanLimit(`timed out before matching ${label}`);
+    const context = Object.assign(this.context ??= vm.createContext({}), values);
+    if (left === Number.POSITIVE_INFINITY) return script.runInContext(context);
+    try {
+      return script.runInContext(context, { timeout: Math.max(1, Math.ceil(left)) });
+    } catch (error: any) {
+      if (error?.code === "ERR_SCRIPT_EXECUTION_TIMEOUT") {
+        throw new ScanLimit(`/${re.source}/ did not finish matching ${label} before the run deadline — simplify the pattern (nested quantifiers backtrack) or raise timeout`);
+      }
+      throw error;
+    }
   }
 
   /** Text as of a git ref, or null when the file did not exist there. */
@@ -371,9 +398,10 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
         const full = path.resolve(cwd, gate.file);
         if (!fs.existsSync(full)) return { ...base, ok: false, reason: `file not found: ${gate.file}`, location: { file: gate.file } };
         const re = new RegExp(gate.pattern, gate.flags ?? "");
-        const text = new Scanner(gate.maxBytes, opts.remainingMs).file(cwd, gate.file, 1);
+        const scan = new Scanner(gate.maxBytes, opts.remainingMs);
+        const text = scan.file(cwd, gate.file, 1);
         if (text == null) return { ...base, ok: false, reason: `file could not be read: ${gate.file}`, location: { file: gate.file } };
-        return re.test(text)
+        return scan.test(text, re, gate.file)
           ? { ...base, ok: true, reason: `${gate.file} matches /${gate.pattern}/` }
           : { ...base, ok: false, reason: `${gate.file} missing /${gate.pattern}/`, location: { file: gate.file } };
       }
@@ -385,12 +413,8 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
         for (const f of files) {
           const text = scan.file(cwd, f, files.length);
           if (text == null) return { ...base, ok: false, reason: `matched file disappeared: ${f}`, location: { file: f } };
-          const lines = text.split("\n");
-          for (let i = 0; i < lines.length; i++) {
-            if (re.test(lines[i])) {
-              return { ...base, ok: false, reason: `${f}:${i + 1} matches /${gate.pattern}/`, location: { file: f, line: i + 1 } };
-            }
-          }
+          const [hit] = scan.matchingLines(text, re, f, 1);
+          if (hit != null) return { ...base, ok: false, reason: `${f}:${hit + 1} matches /${gate.pattern}/`, location: { file: f, line: hit + 1 } };
         }
         return { ...base, ok: true, reason: `no /${gate.pattern}/ in ${gate.glob} (${files.length} files)` };
       }
@@ -482,9 +506,8 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
       }
       case "no-new":
       case "no-fewer": {
-        // Fresh regex per line (drop g/y so lastIndex can't advance between .test calls).
-        const flags = (gate.flags ?? "").replace(/[gy]/g, "");
-        const re = () => new RegExp(gate.pattern, flags);
+        // Drop g/y so lastIndex can't advance between .test calls; one regex then serves every line.
+        const re = new RegExp(gate.pattern, (gate.flags ?? "").replace(/[gy]/g, ""));
         const ignore = gate.ignore ?? [];
         const workFiles = scanFiles(cwd, gate.glob, ignore);
         const baseFiles = listFilesAtRef(cwd, diffBase, true).filter((p) => inScan(p, gate.glob, ignore));
@@ -497,12 +520,12 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
         let firstLost: string | undefined;
         for (const f of union) {
           const baseText = scan.atRef(cwd, diffBase, f, union.length);
-          const fileBase = baseText == null ? 0 : countMatchingLines(baseText, re());
+          const fileBase = baseText == null ? 0 : scan.matchingLines(baseText, re, `${f} at ${baseLabel(diffBase)}`).length;
           const text = scan.file(cwd, f, union.length);
           // A file gone from the working tree contributes 0; no-deleted covers the file itself.
-          const fileWork = text == null ? 0 : countMatchingLines(text, re(), (i) => {
-            if (!firstNew) firstNew = { file: f, line: i + 1 };
-          });
+          const hits = text == null ? [] : scan.matchingLines(text, re, f);
+          if (hits.length && !firstNew) firstNew = { file: f, line: hits[0] + 1 };
+          const fileWork = hits.length;
           if (fileWork < fileBase && !firstLost) firstLost = f;
           baseCount += fileBase;
           workCount += fileWork;
@@ -693,7 +716,8 @@ function checkGate(gate: Gate, cwd: string, opts: RunOptions): GateResult {
         const commits = commitSubjects(cwd, diffBase);
         const short = baseLabel(diffBase);
         if (commits.length === 0) return { ...base, ok: true, reason: `no commits since ${short}` };
-        const bad = commits.filter((commit) => !re.test(commit.subject));
+        const scan = new Scanner(undefined, opts.remainingMs);
+        const bad = commits.filter((commit) => !scan.test(commit.subject, re, "a commit subject"));
         return bad.length
           ? { ...base, ok: false, reason: `${bad.length} of ${commits.length} commit message(s) since ${short} do not match /${gate.pattern}/: ${sample(bad, 3, (c) => commitLabel(c))}` }
           : { ...base, ok: true, reason: `${commits.length} commit message(s) since ${short} match` };

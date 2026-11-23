@@ -2,7 +2,54 @@
 
 ## Unreleased
 
+## 0.16.1 - 2026-11-23
+
+### Added
+- `skillgate install devin` gates Devin Desktop (formerly Windsurf) and the Devin CLI:
+  a fail-closed `PreToolUse` hook on the `exec` shell tool in `.devin/hooks.v1.json`,
+  checked by `doctor devin`. `gate` now judges an `exec` tool call as a shell command;
+  before, it allowed it as an ungated tool.
+- `skillgate install <target> --follow-symlinks` writes through a symlinked agent
+  configuration (a dotfiles `.claude/settings.json`, say) to the regular file it names
+  and keeps the link. Without the flag a link is still refused, now with a hint; a
+  dangling link or a link to a non-file is refused either way.
+
 ### Fixed
+- In a shallow clone whose history stops before the fork point, diff-aware gates now say
+  so and name the fetch that fixes it (`fetch-depth: 0`, `GIT_DEPTH: 0`, or
+  `git fetch --unshallow`) instead of calling the baseline unrelated or unreadable. The
+  run still fails closed.
+- A dry run is not a finish line: `npm publish --dry-run`, `git push --dry-run`,
+  `git push -n`, `git commit --dry-run` and any matched command with `--dry-run` before
+  `--` are allowed while gates are unmet, so an agent can check a release before it is
+  done. `git commit -n` (which skips hooks) and `npm run release -- --dry-run` are still
+  finish lines.
+- Finish-line matching reads a here-document body as data: a commit message passed with
+  `git commit -F- <<'EOF'` or a note written with `cat > notes.md <<EOF` no longer counts
+  as a finish line because a line of it mentions `git push`. The body still counts when a
+  shell may run it (`bash <<EOF`, `cat <<EOF | sh`, `ssh host <<EOF`), and the `$(...)`
+  and backtick substitutions of an unquoted body still count.
+- Diff-aware gates in a pull request are judged against the branch the request targets
+  (`GITHUB_BASE_REF`, GitLab's `CI_MERGE_REQUEST_TARGET_BRANCH_NAME`, Bitbucket's
+  `BITBUCKET_PR_DESTINATION_BRANCH`), not origin's default branch. A request stacked on
+  another branch could pass a `no-fewer` gate after dropping test cases, because the
+  count was compared with the default branch. A target that is not in the checkout
+  fails closed with a fetch hint; `--base` and `SKILLGATE_BASE` still win.
+  **Upgrade note:** a pull-request CI job that runs `skillgate check` from a shallow
+  checkout (`actions/checkout`'s default `fetch-depth: 1`) now stops with exit 2 and
+  "the pull request's target branch ... is not in this checkout". Fix: set
+  `fetch-depth: 0` on `actions/checkout`, or fetch the target branch before the check
+  (`git fetch origin "$GITHUB_BASE_REF"`). The workflow from
+  `skillgate install github-actions` already fetches full history.
+- Pattern gates (`absent`, `file-contains`, `no-new`, `no-fewer`, `commit-messages`)
+  match under the run deadline: a pattern that backtracks catastrophically fails its
+  gate with a reason naming the file instead of wedging the hook past its timeout.
+  Matching costs about 0.35 ms more per scanned file.
+- `skillgate log` streams decision logs, skips invalid record shapes without losing
+  valid neighboring records, and counts event names such as `__proto__` correctly.
+- `skillgate explain --commands <log>` skips a truncated or corrupt decision-log record
+  instead of replaying its JSON text as a command, and reports how many lines it skipped
+  (`skipped` in `--json`).
 - The `commit-messages` gate drops the `g` and `y` flags, as `absent` and `no-new` do,
   so a matching subject no longer fails because the previous match moved `lastIndex`.
 
