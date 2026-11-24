@@ -68,8 +68,11 @@ jobs:
       - name: npm 11 for trusted publishing
         run: npm install -g npm@11.12.1
 
-      - name: Publish to npm with provenance
-        run: npm publish --provenance --access public
+      - name: npm publish of each version npm lacks; one npm already serves with the same contents is skipped
+        id: already-published
+        env:
+          NPM_CONFIG_PROVENANCE: true
+        run: node .github/scripts/npm-publish-new.mjs --dir . --out already-published.json
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
